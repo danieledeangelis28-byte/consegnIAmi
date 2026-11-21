@@ -385,6 +385,7 @@
                                 </svg>
                             </button>
                             <input type="text" id="input-manual-single-address" enterkeyhint="enter"
+                                autocomplete="off"
                                 class="flex-1 min-w-0 px-3.5 py-2.5 bg-slate-50 border border-slate-300 rounded-xl text-sm font-semibold text-slate-800 focus:outline-none focus:ring-2 focus:ring-posteBlue"
                                 placeholder="Scrivi un indirizzo e premi Invio...">
                             <button type="button" id="btn-manual-single-roma"
@@ -397,6 +398,11 @@
                                 class="px-3.5 py-2.5 bg-posteBlue hover:bg-posteBlueDark text-posteYellow font-black text-sm rounded-xl shadow-sm transition-colors flex-shrink-0">
                                 +
                             </button>
+                        </div>
+
+                        <!-- Menu a tendina suggerimenti indirizzi durante la digitazione -->
+                        <div id="manual-address-suggestions"
+                            class="hidden bg-white border border-slate-200 rounded-2xl shadow-lg overflow-hidden divide-y divide-slate-100">
                         </div>
 
                         <!-- Caselle di testo dedicate create per ogni indirizzo inserito -->
@@ -944,12 +950,26 @@
                 });
                 singleManualInput.value = "";
                 setSinglePriorityVisual(false);
+                hideManualSuggestions();
                 renderManualAddressBoxes();
                 singleManualInput.focus();
             };
 
+            const hideManualSuggestions = initManualAddressAutocomplete(
+                singleManualInput,
+                document.getElementById("manual-address-suggestions"),
+                (selectedAddress) => {
+                    const isPriority = singleManualPriorityBtn.dataset.priority === "true";
+                    appState.manualAddresses.push({ address: selectedAddress, priority: isPriority });
+                    singleManualInput.value = "";
+                    setSinglePriorityVisual(false);
+                    renderManualAddressBoxes();
+                    singleManualInput.focus();
+                }
+            );
+
             singleManualInput.addEventListener("keydown", (e) => {
-                if (e.key === "Enter") {
+                if (e.key === "Enter" && !e.defaultPrevented) {
                     e.preventDefault();
                     addManualAddressFromBar();
                 }
@@ -966,6 +986,7 @@
                     appState.manualAddresses.push({ address: pendingText, priority: isPriority });
                     singleManualInput.value = "";
                     setSinglePriorityVisual(false);
+                    hideManualSuggestions();
                     renderManualAddressBoxes();
                 }
 
@@ -1001,6 +1022,337 @@
             if (!cleaned) return ", Roma";
             if (/,\s*roma$/i.test(cleaned)) return cleaned;
             return `${cleaned}, Roma`;
+        }
+
+        /**
+         * Suggerimenti Indirizzi in Tempo Reale per l'Inserimento Manuale
+         * Combina cache locale istantanea + Photon (con bias sulla sede) + fallback Nominatim
+         */
+        function initManualAddressAutocomplete(inputEl, dropdownEl, onQuickAddAddress) {
+            if (!inputEl || !dropdownEl) return () => {};
+
+            let debounceTimer = null;
+            let activeAbortController = null;
+            let currentSuggestions = [];
+            let highlightedIndex = -1;
+
+            const hideDropdown = () => {
+                dropdownEl.classList.add("hidden");
+                dropdownEl.innerHTML = "";
+                currentSuggestions = [];
+                highlightedIndex = -1;
+            };
+
+            const extractTypedHouseNumber = (queryText) => {
+                const streetPart = queryText.split(",")[0].trim();
+                const match = streetPart.match(/(?:^|\s)(\d+[a-zA-Z]?)$/);
+                return match ? match[1] : "";
+            };
+
+            const getBiasCoordinates = () => {
+                const startVal = (document.getElementById("input-start-address")?.value || DEFAULT_START).trim().toLowerCase();
+                const cache = loadGeoCache();
+                if (cache[startVal] && Number.isFinite(cache[startVal].lat) && Number.isFinite(cache[startVal].lon)) {
+                    return { lat: cache[startVal].lat, lon: cache[startVal].lon };
+                }
+                return { lat: 41.9028, lon: 12.4964 }; // Default Roma
+            };
+
+            const formatPhotonSuggestion = (feat, typedHouseNum) => {
+                const props = feat?.properties || {};
+                const coords = feat?.geometry?.coordinates;
+                const street = (props.street || props.name || "").trim();
+                if (!street) return null;
+
+                let houseNum = (props.housenumber || "").trim();
+                if (!houseNum && typedHouseNum && !new RegExp(`\\b${typedHouseNum}\\b`, "i").test(street)) {
+                    houseNum = typedHouseNum;
+                }
+
+                const city = (props.city || props.town || props.village || props.municipality || "").trim();
+                const district = (props.district || props.suburb || "").trim();
+                const mainLine = `${street}${houseNum ? " " + houseNum : ""}`;
+                const fullAddress = city ? `${mainLine}, ${city}` : mainLine;
+                const subParts = [district, city, props.county].filter(Boolean);
+
+                return {
+                    mainText: mainLine,
+                    subText: [...new Set(subParts)].join(" • ") || "Suggerimento stradale",
+                    fullAddress,
+                    hasHouseNumber: Boolean(houseNum),
+                    lat: Array.isArray(coords) ? parseFloat(coords[1]) : null,
+                    lon: Array.isArray(coords) ? parseFloat(coords[0]) : null,
+                    fromCache: false
+                };
+            };
+
+            const formatNominatimSuggestion = (item, typedHouseNum) => {
+                const addr = item?.address || {};
+                const street = (addr.road || addr.pedestrian || addr.footway || addr.square || item.name || "").trim();
+                if (!street) return null;
+
+                let houseNum = (addr.house_number || "").trim();
+                if (!houseNum && typedHouseNum && !new RegExp(`\\b${typedHouseNum}\\b`, "i").test(street)) {
+                    houseNum = typedHouseNum;
+                }
+
+                const city = (addr.city || addr.town || addr.village || addr.municipality || "").trim();
+                const suburb = (addr.suburb || addr.quarter || "").trim();
+                const mainLine = `${street}${houseNum ? " " + houseNum : ""}`;
+                const fullAddress = city ? `${mainLine}, ${city}` : mainLine;
+                const subParts = [suburb, city].filter(Boolean);
+
+                return {
+                    mainText: mainLine,
+                    subText: [...new Set(subParts)].join(" • ") || "OpenStreetMap",
+                    fullAddress,
+                    hasHouseNumber: Boolean(houseNum),
+                    lat: parseFloat(item.lat),
+                    lon: parseFloat(item.lon),
+                    fromCache: false
+                };
+            };
+
+            const getLocalCacheSuggestions = (queryText) => {
+                const q = queryText.toLowerCase();
+                const cache = loadGeoCache();
+                const matches = [];
+
+                Object.keys(cache).forEach((key) => {
+                    if (key.includes(q)) {
+                        const geo = cache[key];
+                        const formatted = key.replace(/\b\w/g, (c) => c.toUpperCase());
+                        const parts = formatted.split(",");
+                        matches.push({
+                            mainText: parts[0].trim(),
+                            subText: (parts.slice(1).join(",").trim() || "Indirizzo salvato") + " • Recente",
+                            fullAddress: formatted,
+                            hasHouseNumber: /\d+/.test(parts[0]),
+                            lat: geo.lat,
+                            lon: geo.lon,
+                            fromCache: true
+                        });
+                    }
+                });
+
+                return matches.slice(0, 2);
+            };
+
+            const persistSuggestionInCache = (item) => {
+                if (item && Number.isFinite(item.lat) && Number.isFinite(item.lon) && item.fullAddress) {
+                    const cache = loadGeoCache();
+                    cache[item.fullAddress.trim().toLowerCase()] = {
+                        lat: item.lat,
+                        lon: item.lon,
+                        displayName: item.fullAddress
+                    };
+                    saveGeoCache(cache);
+                }
+            };
+
+            const applySuggestionToInput = (item) => {
+                persistSuggestionInCache(item);
+                inputEl.value = item.fullAddress;
+                hideDropdown();
+                inputEl.focus();
+
+                // Se manca il civico e c'è ", Roma", posiziona il cursore prima della virgola per scriverlo al volo
+                const commaIdx = item.fullAddress.indexOf(",");
+                if (!item.hasHouseNumber && commaIdx > 0) {
+                    inputEl.setSelectionRange(commaIdx, commaIdx);
+                } else {
+                    const len = item.fullAddress.length;
+                    inputEl.setSelectionRange(len, len);
+                }
+            };
+
+            const renderSuggestions = (items, isLoading = false) => {
+                currentSuggestions = items;
+                highlightedIndex = -1;
+
+                if (items.length === 0 && !isLoading) {
+                    hideDropdown();
+                    return;
+                }
+
+                dropdownEl.innerHTML = "";
+
+                if (isLoading && items.length === 0) {
+                    dropdownEl.innerHTML = `
+                        <div class="px-3.5 py-2.5 text-xs font-semibold text-slate-500 flex items-center gap-2">
+                            <span class="w-3.5 h-3.5 rounded-full border-2 border-posteBlue border-t-transparent animate-spin inline-block"></span>
+                            <span>Ricerca indirizzi...</span>
+                        </div>
+                    `;
+                    dropdownEl.classList.remove("hidden");
+                    return;
+                }
+
+                items.forEach((item, idx) => {
+                    const row = document.createElement("div");
+                    row.dataset.suggIdx = String(idx);
+                    row.className = "suggestion-row flex items-center justify-between gap-2 px-3 py-2.5 hover:bg-blue-50/80 transition-colors cursor-pointer";
+                    row.innerHTML = `
+                        <div class="flex items-center gap-2.5 min-w-0 flex-1">
+                            <span class="w-6 h-6 rounded-lg ${item.fromCache ? "bg-amber-100 text-amber-700" : "bg-blue-100 text-posteBlue"} flex items-center justify-center flex-shrink-0">
+                                <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.4">
+                                    <path stroke-linecap="round" stroke-linejoin="round" d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z" />
+                                    <path stroke-linecap="round" stroke-linejoin="round" d="M15 11a3 3 0 11-6 0 3 3 0 016 0z" />
+                                </svg>
+                            </span>
+                            <div class="min-w-0 flex-1">
+                                <p class="text-xs font-extrabold text-slate-800 truncate">${escapeHtml(item.mainText)}</p>
+                                <p class="text-[11px] font-medium text-slate-500 truncate">${escapeHtml(item.subText)}</p>
+                            </div>
+                        </div>
+                        <button type="button"
+                            data-quick-add-idx="${idx}"
+                            title="Aggiungi subito alla lista"
+                            class="px-2.5 py-1.5 rounded-lg bg-posteYellow/50 hover:bg-posteYellow text-posteBlue font-extrabold text-[11px] flex-shrink-0 transition-colors">
+                            + Aggiungi
+                        </button>
+                    `;
+
+                    row.addEventListener("mousedown", (e) => e.preventDefault());
+
+                    row.addEventListener("click", (e) => {
+                        if (e.target.closest("[data-quick-add-idx]")) {
+                            persistSuggestionInCache(item);
+                            hideDropdown();
+                            onQuickAddAddress(item.fullAddress);
+                        } else {
+                            applySuggestionToInput(item);
+                        }
+                    });
+
+                    dropdownEl.appendChild(row);
+                });
+
+                dropdownEl.classList.remove("hidden");
+            };
+
+            const updateHighlight = () => {
+                dropdownEl.querySelectorAll(".suggestion-row").forEach((el, idx) => {
+                    if (idx === highlightedIndex) {
+                        el.classList.add("bg-blue-50");
+                    } else {
+                        el.classList.remove("bg-blue-50");
+                    }
+                });
+            };
+
+            const fetchSuggestions = async (rawQuery) => {
+                const query = rawQuery.trim();
+                if (query.length < 3) {
+                    hideDropdown();
+                    return;
+                }
+
+                const localMatches = getLocalCacheSuggestions(query);
+                renderSuggestions(localMatches, true);
+
+                if (activeAbortController) {
+                    activeAbortController.abort();
+                }
+                activeAbortController = new AbortController();
+                const signal = activeAbortController.signal;
+
+                const typedHouseNum = extractTypedHouseNumber(query);
+                const bias = getBiasCoordinates();
+                const searchQuery = /roma|marinella|fiumicino|guidonia|tivoli|pomezia|ciampino|lazio/i.test(query)
+                    ? query
+                    : `${query}, Roma`;
+
+                const results = [...localMatches];
+                const seen = new Set(results.map(r => r.fullAddress.toLowerCase()));
+
+                try {
+                    const photonUrl = `https://photon.komoot.io/api/?q=${encodeURIComponent(searchQuery)}&limit=6&lang=it&lat=${bias.lat.toFixed(4)}&lon=${bias.lon.toFixed(4)}`;
+                    const res = await fetch(photonUrl, { signal });
+                    if (res.ok) {
+                        const data = await res.json();
+                        const features = Array.isArray(data?.features) ? data.features : [];
+                        features.forEach((feat) => {
+                            const parsed = formatPhotonSuggestion(feat, typedHouseNum);
+                            if (parsed && !seen.has(parsed.fullAddress.toLowerCase())) {
+                                seen.add(parsed.fullAddress.toLowerCase());
+                                results.push(parsed);
+                            }
+                        });
+                    }
+                } catch (err) {
+                    if (err?.name === "AbortError") return;
+                }
+
+                // Fallback su Nominatim se Photon non ha trovato risultati
+                if (results.length === 0) {
+                    try {
+                        const nomUrl = `https://nominatim.openstreetmap.org/search?format=json&addressdetails=1&limit=5&countrycodes=it&q=${encodeURIComponent(searchQuery)}`;
+                        const res = await fetch(nomUrl, { signal });
+                        if (res.ok) {
+                            const data = await res.json();
+                            if (Array.isArray(data)) {
+                                data.forEach((item) => {
+                                    const parsed = formatNominatimSuggestion(item, typedHouseNum);
+                                    if (parsed && !seen.has(parsed.fullAddress.toLowerCase())) {
+                                        seen.add(parsed.fullAddress.toLowerCase());
+                                        results.push(parsed);
+                                    }
+                                });
+                            }
+                        }
+                    } catch (err) {
+                        if (err?.name === "AbortError") return;
+                    }
+                }
+
+                if (!signal.aborted) {
+                    renderSuggestions(results.slice(0, 5), false);
+                }
+            };
+
+            inputEl.addEventListener("input", () => {
+                clearTimeout(debounceTimer);
+                const val = inputEl.value;
+                if (val.trim().length < 3) {
+                    if (activeAbortController) activeAbortController.abort();
+                    hideDropdown();
+                    return;
+                }
+                debounceTimer = setTimeout(() => {
+                    fetchSuggestions(val);
+                }, 280);
+            });
+
+            inputEl.addEventListener("keydown", (e) => {
+                if (dropdownEl.classList.contains("hidden") || currentSuggestions.length === 0) return;
+
+                if (e.key === "ArrowDown") {
+                    e.preventDefault();
+                    highlightedIndex = (highlightedIndex + 1) % currentSuggestions.length;
+                    updateHighlight();
+                } else if (e.key === "ArrowUp") {
+                    e.preventDefault();
+                    highlightedIndex = (highlightedIndex - 1 + currentSuggestions.length) % currentSuggestions.length;
+                    updateHighlight();
+                } else if (e.key === "Escape") {
+                    e.preventDefault();
+                    hideDropdown();
+                } else if (e.key === "Enter" && highlightedIndex >= 0 && currentSuggestions[highlightedIndex]) {
+                    e.preventDefault();
+                    applySuggestionToInput(currentSuggestions[highlightedIndex]);
+                }
+            });
+
+            inputEl.addEventListener("blur", () => {
+                setTimeout(() => {
+                    if (document.activeElement !== inputEl) {
+                        hideDropdown();
+                    }
+                }, 200);
+            });
+
+            return hideDropdown;
         }
 
         /**

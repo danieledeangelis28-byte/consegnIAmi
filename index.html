@@ -1,0 +1,1966 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Ottimizzatore Consegne - Poste</title>
+
+    <!-- Google Fonts: Inter -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
+
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    fontFamily: {
+                        sans: ['Inter', 'sans-serif'],
+                    },
+                    colors: {
+                        posteYellow: '#FEDB00',
+                        posteYellowDark: '#E5C500',
+                        posteBlue: '#0039A6',
+                        posteBlueDark: '#002875',
+                    }
+                }
+            }
+        }
+    </script>
+
+    <!-- Leaflet CSS & JS (Mappa Interattiva Gratuita su CDN affidabile) -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css" />
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+
+    <!-- Tesseract.js v5 (OCR Offline 100% Gratuito nel Browser) -->
+    <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
+
+    <style>
+        body {
+            -webkit-tap-highlight-color: transparent;
+            overscroll-behavior-y: contain;
+        }
+
+        /* Dimensioni esplicite contenitore mappa e fix compatibilità Tailwind + Leaflet */
+        #route-map {
+            width: 100%;
+            height: 280px;
+            min-height: 280px;
+            z-index: 1;
+        }
+
+        .leaflet-container img,
+        .leaflet-tile {
+            max-width: none !important;
+            max-height: none !important;
+        }
+
+        /* Stili Marker Personalizzati Mappa Leaflet */
+        .custom-div-icon {
+            background: transparent;
+            border: none;
+        }
+
+        .marker-pin {
+            width: 32px;
+            height: 32px;
+            border-radius: 9999px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: 800;
+            font-size: 12px;
+            box-shadow: 0 3px 8px rgba(0, 0, 0, 0.28);
+            border: 2.5px solid #ffffff;
+            transition: transform 0.2s ease;
+        }
+
+        .marker-start {
+            width: 36px;
+            height: 36px;
+            background-color: #0039A6;
+            color: #FEDB00;
+            font-size: 13px;
+        }
+
+        .marker-end {
+            width: 34px;
+            height: 34px;
+            background-color: #1e293b;
+            color: #ffffff;
+        }
+
+        .marker-stop {
+            background-color: #FEDB00;
+            color: #0039A6;
+            border-color: #0039A6;
+        }
+
+        .marker-stop.completed {
+            background-color: #16a34a;
+            color: #ffffff;
+            border-color: #ffffff;
+            opacity: 0.85;
+        }
+
+        /* Fix z-index Leaflet rispetto agli header sticky */
+        .leaflet-pane,
+        .leaflet-top,
+        .leaflet-bottom {
+            z-index: 10 !important;
+        }
+    </style>
+</head>
+<body class="bg-slate-100 text-slate-900 font-sans min-h-screen flex flex-col">
+
+    <!-- ========================================== -->
+    <!-- HEADER PRINCIPALE & NAVIGAZIONE STEP       -->
+    <!-- ========================================== -->
+    <header class="sticky top-0 z-30 shadow-md">
+        <!-- Barra Superiore Brand -->
+        <div class="bg-posteBlue text-white px-4 py-3 flex items-center justify-between">
+            <div class="flex items-center gap-2.5">
+                <div class="w-9 h-9 rounded-xl bg-posteYellow text-posteBlue font-black text-lg flex items-center justify-center shadow-sm">
+                    P
+                </div>
+                <div>
+                    <h1 class="text-base font-extrabold leading-tight tracking-tight">Ottimizzatore Consegne</h1>
+                    <p class="text-[11px] text-blue-200 font-medium">Pianificatore Giro • Zero API Key</p>
+                </div>
+            </div>
+
+            <div class="flex items-center gap-1.5">
+                <button type="button" id="btn-open-pwa-modal"
+                    class="px-2.5 py-1.5 rounded-xl bg-blue-800/80 hover:bg-blue-700 text-posteYellow text-xs font-bold flex items-center gap-1 transition-colors"
+                    title="Salva su schermata Home">
+                    <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.2">
+                        <path stroke-linecap="round" stroke-linejoin="round" d="M12 18h.01M8 21h8a2 2 0 002-2V5a2 2 0 00-2-2H8a2 2 0 00-2 2v14a2 2 0 002 2z" />
+                    </svg>
+                    <span class="hidden sm:inline">App</span>
+                </button>
+
+                <button type="button" id="btn-reset-shift"
+                    class="hidden px-2.5 py-1.5 rounded-xl bg-red-600 hover:bg-red-700 text-white text-xs font-bold flex items-center gap-1 transition-colors">
+                    <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.2">
+                        <path stroke-linecap="round" stroke-linejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                    </svg>
+                    <span>Nuovo</span>
+                </button>
+            </div>
+        </div>
+
+        <!-- Barra Tab Navigazione Step -->
+        <nav class="bg-white border-b border-slate-200 grid grid-cols-3 text-xs font-bold">
+            <button type="button" data-nav-step="1"
+                class="step-tab py-2.5 px-2 flex items-center justify-center gap-1.5 text-posteBlue bg-blue-50 border-r border-slate-100 transition-colors">
+                <span class="w-5 h-5 rounded-full bg-posteBlue text-white text-[11px] flex items-center justify-center font-extrabold">1</span>
+                <span>Carica</span>
+            </button>
+            <button type="button" data-nav-step="2"
+                class="step-tab py-2.5 px-2 flex items-center justify-center gap-1.5 text-slate-500 border-r border-slate-100 transition-colors">
+                <span class="w-5 h-5 rounded-full bg-slate-200 text-slate-600 text-[11px] flex items-center justify-center font-extrabold">2</span>
+                <span>Verifica</span>
+            </button>
+            <button type="button" id="nav-tab-route" data-nav-step="4" disabled
+                class="step-tab py-2.5 px-2 flex items-center justify-center gap-1.5 text-slate-500 opacity-50 cursor-not-allowed transition-colors">
+                <span class="w-5 h-5 rounded-full bg-slate-200 text-slate-600 text-[11px] flex items-center justify-center font-extrabold">3</span>
+                <span>Percorso</span>
+            </button>
+        </nav>
+
+        <!-- Barra Avanzamento Turno (Visibile nello Step 4) -->
+        <div id="sticky-progress-container" class="hidden bg-white/95 backdrop-blur-sm border-b border-slate-200 px-4 py-2.5">
+            <div class="max-w-lg mx-auto space-y-1.5">
+                <div class="flex items-center justify-between text-xs">
+                    <span class="font-extrabold text-posteBlue">
+                        Consegnati: <span id="stat-delivered" class="text-green-700">0 / 0</span>
+                    </span>
+                    <div class="flex items-center gap-3 text-slate-600 font-bold">
+                        <span>⏱ <span id="stat-duration">--</span></span>
+                        <span>🛣 <span id="stat-distance">--</span></span>
+                    </div>
+                </div>
+                <div class="w-full bg-slate-200 rounded-full h-2 overflow-hidden">
+                    <div id="turn-progress-bar" class="bg-green-600 h-2 rounded-full transition-all duration-300" style="width: 0%"></div>
+                </div>
+            </div>
+        </div>
+    </header>
+
+    <!-- ========================================== -->
+    <!-- CONTENITORE PRINCIPALE MOBILE-FIRST        -->
+    <!-- ========================================== -->
+    <main class="flex-1 w-full max-w-lg mx-auto p-4 pb-24">
+
+        <!-- ========================================== -->
+        <!-- STEP 1: PARTENZA/ARRIVO & ACQUISIZIONE     -->
+        <!-- ========================================== -->
+        <div id="view-step-1" class="space-y-4">
+
+            <!-- Card 1: Impostazioni Sede Partenza / Arrivo -->
+            <section class="bg-white rounded-2xl shadow-sm border border-slate-200/80 p-4 space-y-3.5">
+                <div class="flex items-center justify-between">
+                    <h2 class="text-sm font-extrabold text-slate-800 uppercase tracking-wide flex items-center gap-1.5">
+                        <span class="w-2 h-2 rounded-full bg-posteBlue"></span>
+                        Base di Partenza e Rientro
+                    </h2>
+                    <button type="button" id="btn-copy-start-to-end"
+                        class="text-[11px] font-bold text-posteBlue hover:underline">
+                        Rientro = Partenza
+                    </button>
+                </div>
+
+                <div class="space-y-2.5">
+                    <div>
+                        <label for="input-start-address" class="block text-xs font-bold text-slate-600 mb-1">Indirizzo di Partenza</label>
+                        <input type="text" id="input-start-address"
+                            class="w-full px-3.5 py-2.5 bg-slate-50 border border-slate-300 rounded-xl text-sm font-semibold text-slate-800 focus:outline-none focus:ring-2 focus:ring-posteBlue"
+                            placeholder="Es. Via degli Arcelli, Roma">
+                    </div>
+
+                    <div>
+                        <label for="input-end-address" class="block text-xs font-bold text-slate-600 mb-1">Indirizzo di Arrivo / Fine Turno</label>
+                        <input type="text" id="input-end-address"
+                            class="w-full px-3.5 py-2.5 bg-slate-50 border border-slate-300 rounded-xl text-sm font-semibold text-slate-800 focus:outline-none focus:ring-2 focus:ring-posteBlue"
+                            placeholder="Es. Via degli Arcelli, Roma">
+                    </div>
+                </div>
+            </section>
+
+            <!-- Card 2: Caricamento Foto / Screenshot -->
+            <section class="bg-white rounded-2xl shadow-sm border border-slate-200/80 p-4 space-y-4">
+                <div>
+                    <h2 class="text-base font-extrabold text-slate-800">Carica Foto o Screenshot Indirizzi</h2>
+                    <p class="text-xs text-slate-500 mt-0.5">Scatta una foto alla distinta o carica uno screenshot dal telefono.</p>
+                </div>
+
+                <!-- Area Selezione Immagine -->
+                <label id="upload-dropzone" for="image-file-input"
+                    class="block border-2 border-dashed border-posteBlue/40 hover:border-posteBlue bg-blue-50/40 hover:bg-blue-50 rounded-2xl p-6 text-center cursor-pointer transition-all">
+                    <div class="w-12 h-12 rounded-2xl bg-posteYellow text-posteBlue mx-auto flex items-center justify-center shadow-sm mb-3">
+                        <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.2">
+                            <path stroke-linecap="round" stroke-linejoin="round" d="M3 9a2 2 0 012-2h.93a2 2 0 001.664-.89l.812-1.22A2 2 0 0110.07 4h3.86a2 2 0 011.664.89l.812 1.22A2 2 0 0018.07 7H19a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V9z" />
+                            <path stroke-linecap="round" stroke-linejoin="round" d="M15 13a3 3 0 11-6 0 3 3 0 016 0z" />
+                        </svg>
+                    </div>
+                    <p class="text-sm font-extrabold text-posteBlue">Tocca per Scattare Foto o Scegliere Immagine</p>
+                    <p class="text-xs text-slate-500 mt-1">Supporta JPG, PNG, Screenshot (Elaborazione 100% locale)</p>
+                    <input type="file" id="image-file-input" accept="image/*" class="hidden">
+                </label>
+
+                <!-- Anteprima Immagine Caricata -->
+                <div id="image-preview-wrapper" class="hidden space-y-3">
+                    <div class="relative rounded-2xl overflow-hidden border border-slate-200 bg-slate-900">
+                        <img id="image-preview-el" src="" alt="Anteprima indirizzi" class="w-full max-h-64 object-contain mx-auto">
+                        <button type="button" id="btn-remove-image"
+                            class="absolute top-2.5 right-2.5 px-3 py-1.5 bg-red-600/95 hover:bg-red-700 text-white text-xs font-extrabold rounded-xl shadow-md">
+                            Cambia Foto
+                        </button>
+                    </div>
+
+                    <!-- Stato Estrazione OCR -->
+                    <div id="extraction-status-box" class="hidden bg-blue-50 border border-blue-200 rounded-xl p-3.5 space-y-2">
+                        <div class="flex items-center gap-2.5">
+                            <svg class="animate-spin h-5 w-5 text-posteBlue flex-shrink-0" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                                <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                                <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                            </svg>
+                            <span id="extraction-status-text" class="text-xs font-bold text-posteBlue">Analisi immagine in corso...</span>
+                        </div>
+                        <div class="w-full bg-blue-200 rounded-full h-1.5 overflow-hidden">
+                            <div id="extraction-progress-bar" class="bg-posteBlue h-1.5 rounded-full transition-all duration-300" style="width: 20%"></div>
+                        </div>
+                    </div>
+
+                    <!-- Bottone Estrazione OCR Offline -->
+                    <button type="button" id="btn-extract-ocr-offline"
+                        class="w-full py-3.5 px-4 bg-posteBlue hover:bg-posteBlueDark text-posteYellow font-extrabold text-sm rounded-xl shadow-md flex items-center justify-center gap-2 transition-all active:scale-[0.98]">
+                        <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                            <path stroke-linecap="round" stroke-linejoin="round" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                        </svg>
+                        Estrai Indirizzi dalla Foto (OCR Gratuito)
+                    </button>
+                </div>
+
+                <!-- Divisore + Inserimento Manuale & Test Rapido -->
+                <div class="pt-2 border-t border-slate-100 space-y-2.5">
+                    <button type="button" id="btn-toggle-manual"
+                        class="w-full py-2.5 px-3.5 bg-slate-100 hover:bg-slate-200/80 text-slate-700 font-bold text-xs rounded-xl flex items-center justify-between transition-colors">
+                        <span>Incolla o Scrivi Indirizzi Manualmente</span>
+                        <svg id="icon-manual-chevron" xmlns="http://www.w3.org/2000/svg" class="h-4 w-4 transition-transform" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.2">
+                            <path stroke-linecap="round" stroke-linejoin="round" d="M19 9l-7 7-7-7" />
+                        </svg>
+                    </button>
+
+                    <div id="manual-input-panel" class="hidden space-y-2.5 pt-1">
+                        <textarea id="textarea-manual-addresses" rows="5"
+                            class="w-full p-3 bg-slate-50 border border-slate-300 rounded-xl text-sm font-medium text-slate-800 focus:outline-none focus:ring-2 focus:ring-posteBlue"
+                            placeholder="Inserisci un indirizzo per riga, es:&#10;Via Gregorio XI 4, Roma&#10;Via Cornelia 164, Roma"></textarea>
+                        <button type="button" id="btn-import-manual"
+                            class="w-full py-3 px-4 bg-slate-800 hover:bg-slate-900 text-white font-extrabold text-xs rounded-xl transition-colors">
+                            Usa Questi Indirizzi
+                        </button>
+                    </div>
+
+                    <button type="button" id="btn-load-example"
+                        class="w-full py-2.5 px-3.5 bg-posteYellow/30 hover:bg-posteYellow/50 text-posteBlue font-extrabold text-xs rounded-xl border border-posteYellow transition-colors">
+                        Carica Esempio (Giro Roma + Fuori Zona)
+                    </button>
+                </div>
+            </section>
+        </div>
+
+        <!-- ========================================== -->
+        <!-- STEP 2: VERIFICA RAPIDA INDIRIZZI          -->
+        <!-- ========================================== -->
+        <div id="view-step-2" class="hidden space-y-4">
+            <section class="bg-white rounded-2xl shadow-sm border border-slate-200/80 p-4 space-y-4">
+                <div class="flex items-center justify-between">
+                    <div>
+                        <h2 class="text-base font-extrabold text-slate-800">Verifica Indirizzi Estratti</h2>
+                        <p class="text-xs text-slate-500">Controlla, modifica o aggiungi le singole tappe.</p>
+                    </div>
+                    <span id="badge-address-count" class="bg-posteBlue text-posteYellow text-xs font-extrabold px-2.5 py-1 rounded-full">0</span>
+                </div>
+
+                <!-- Lista Caselle di Testo Individuali (Una per Indirizzo) -->
+                <div id="step2-addresses-list" class="space-y-2.5 max-h-[52vh] overflow-y-auto pr-0.5"></div>
+
+                <!-- Azioni Rapide Lista Indirizzi -->
+                <div class="flex items-center justify-between gap-2 pt-1">
+                    <button type="button" id="btn-add-address-row"
+                        class="px-3 py-2 bg-slate-100 hover:bg-slate-200 text-slate-800 font-extrabold text-xs rounded-xl flex items-center gap-1.5 transition-colors">
+                        <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4 text-posteBlue" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5">
+                            <path stroke-linecap="round" stroke-linejoin="round" d="M12 4v16m8-8H4" />
+                        </svg>
+                        <span>Aggiungi Indirizzo</span>
+                    </button>
+
+                    <button type="button" id="btn-append-roma"
+                        class="px-3 py-2 bg-blue-50 hover:bg-blue-100 text-posteBlue font-bold text-xs rounded-xl flex-shrink-0 transition-colors">
+                        + Aggiungi ", Roma"
+                    </button>
+                </div>
+
+                <!-- Pulsanti Azione Step 2 -->
+                <div class="pt-2 border-t border-slate-100 space-y-2">
+                    <button type="button" id="btn-calculate-route"
+                        class="w-full py-3.5 px-4 bg-posteYellow hover:bg-posteYellowDark text-posteBlue font-black text-sm rounded-xl shadow-md flex items-center justify-center gap-2 transition-all active:scale-[0.98]">
+                        <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.4">
+                            <path stroke-linecap="round" stroke-linejoin="round" d="M9 20l-5.447-2.724A1 1 0 013 16.382V5.618a1 1 0 011.447-.894L9 7m0 13l6-3m-6 3V7m6 10l4.553 2.276A1 1 0 0021 18.382V7.618a1 1 0 00-.553-.894L15 4m0 13V4m0 0L9 7" />
+                        </svg>
+                        Calcola Percorso Ottimizzato
+                    </button>
+
+                    <button type="button" id="btn-back-to-step1"
+                        class="w-full py-2.5 px-4 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-xs rounded-xl transition-colors">
+                        Torna Indietro
+                    </button>
+                </div>
+            </section>
+        </div>
+
+        <!-- ========================================== -->
+        <!-- STEP 3: CALCOLO IN CORSO                   -->
+        <!-- ========================================== -->
+        <div id="view-step-3" class="hidden space-y-4">
+            <section class="bg-white rounded-2xl shadow-sm border border-slate-200/80 p-6 text-center space-y-4">
+                <div class="w-14 h-14 rounded-2xl bg-posteBlue text-posteYellow mx-auto flex items-center justify-center shadow-md">
+                    <svg class="animate-spin h-7 w-7" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                        <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                        <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                    </svg>
+                </div>
+
+                <div class="space-y-1">
+                    <h2 id="calc-step-title" class="text-base font-extrabold text-slate-800">Ricerca coordinate GPS...</h2>
+                    <p id="calc-progress-detail" class="text-xs text-slate-500 font-medium truncate">Preparazione richiesta...</p>
+                </div>
+
+                <div class="space-y-1.5">
+                    <div class="w-full bg-slate-200 rounded-full h-2.5 overflow-hidden">
+                        <div id="calc-progress-bar" class="bg-posteBlue h-2.5 rounded-full transition-all duration-300" style="width: 10%"></div>
+                    </div>
+                    <p id="calc-progress-percent" class="text-xs font-extrabold text-posteBlue">10%</p>
+                </div>
+
+                <div class="bg-amber-50 border border-amber-200 rounded-xl p-3 text-left">
+                    <p class="text-[11px] text-amber-800 leading-relaxed">
+                        <strong>Nota:</strong> L'app localizza gli indirizzi e calcola i <strong>tempi reali di guida su strada</strong> (sensi unici e viabilità) senza richiedere alcuna API key. Gli indirizzi già cercati vengono salvati in memoria per essere istantanei al prossimo giro!
+                    </p>
+                </div>
+            </section>
+        </div>
+
+        <!-- ========================================== -->
+        <!-- STEP 4: PERCORSO OTTIMIZZATO & CHECKLIST   -->
+        <!-- ========================================== -->
+        <div id="view-step-4" class="hidden space-y-4">
+
+            <!-- Alert Anomalie / Fuori Zona (> 25 km) -->
+            <section id="anomalies-section" class="hidden bg-red-600 text-white rounded-2xl shadow-md p-4 space-y-3">
+                <div class="flex items-start gap-2.5">
+                    <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6 text-posteYellow flex-shrink-0 mt-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.2">
+                        <path stroke-linecap="round" stroke-linejoin="round" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+                    </svg>
+                    <div>
+                        <h3 class="text-sm font-black uppercase tracking-wide text-posteYellow">Pacco Fuori Zona Escluso</h3>
+                        <p class="text-xs text-red-100 mt-0.5">Rilevato indirizzo oltre 25 km dalla partenza. Escluso automaticamente per non bruciare il turno:</p>
+                    </div>
+                </div>
+                <ul id="anomalies-list" class="space-y-2"></ul>
+            </section>
+
+            <!-- Alert Indirizzi Non Trovati -->
+            <section id="notfound-section" class="hidden bg-amber-50 border border-amber-300 rounded-2xl p-3.5 space-y-1.5">
+                <p class="text-xs font-extrabold text-amber-900">Indirizzi non localizzati sulla mappa:</p>
+                <p id="notfound-list" class="text-xs text-amber-800"></p>
+            </section>
+
+            <!-- Card Avvio Navigatore Google Maps Multi-Fase -->
+            <section class="bg-white rounded-2xl shadow-sm border border-slate-200/80 p-4 space-y-3">
+                <div class="flex items-center justify-between">
+                    <div>
+                        <h2 class="text-sm font-extrabold text-slate-800 uppercase tracking-wide">Navigazione Google Maps</h2>
+                        <p class="text-[11px] text-slate-500">Diviso in blocchi da max 10 tappe (limite Maps)</p>
+                    </div>
+                    <span id="badge-phases-count" class="bg-blue-100 text-posteBlue text-xs font-extrabold px-2.5 py-1 rounded-full">1 Fase</span>
+                </div>
+
+                <div id="gmaps-phases-container" class="space-y-2.5"></div>
+            </section>
+
+            <!-- Mappa Interattiva -->
+            <section class="bg-white rounded-2xl shadow-sm border border-slate-200/80 p-3 space-y-2.5">
+                <div class="flex items-center justify-between px-1">
+                    <div class="flex items-center gap-2">
+                        <span class="text-xs font-extrabold text-slate-700 uppercase tracking-wide">Mappa del Giro</span>
+                        <span id="badge-routing-mode" class="text-[10px] font-extrabold px-2 py-0.5 rounded-full bg-green-100 text-green-800">Stradale Reale</span>
+                    </div>
+                    <button type="button" id="btn-recenter-map"
+                        class="text-xs font-bold text-posteBlue hover:underline">
+                        Centra Mappa
+                    </button>
+                </div>
+                <div id="route-map" class="w-full h-72 rounded-xl border border-slate-200 overflow-hidden bg-slate-200 relative"></div>
+            </section>
+
+            <!-- Lista Tappe Interattiva (Checklist) -->
+            <section class="bg-white rounded-2xl shadow-sm border border-slate-200/80 overflow-hidden">
+                <div class="p-4 border-b border-slate-100 flex items-center justify-between">
+                    <div>
+                        <h2 class="text-sm font-extrabold text-slate-800 uppercase tracking-wide">Sequenza Consegne</h2>
+                        <p class="text-[11px] text-slate-500">Spunta i pacchi man mano che li consegni</p>
+                    </div>
+                    <button type="button" id="btn-edit-addresses-from-route"
+                        class="px-2.5 py-1.5 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-xs transition-colors">
+                        Modifica Lista
+                    </button>
+                </div>
+
+                <div id="delivery-checklist-container" class="divide-y divide-slate-100"></div>
+            </section>
+        </div>
+    </main>
+
+    <!-- ========================================== -->
+    <!-- MODALE GUIDA INSTALLAZIONE SU TELEFONO     -->
+    <!-- ========================================== -->
+    <div id="modal-pwa" class="hidden fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-end sm:items-center justify-center p-4">
+        <div class="bg-white w-full max-w-md rounded-3xl p-5 shadow-2xl space-y-4">
+            <div class="flex items-center justify-between">
+                <h3 class="text-base font-extrabold text-posteBlue">Usa come App sul Telefono</h3>
+                <button type="button" id="btn-close-pwa-modal" class="p-1.5 rounded-full bg-slate-100 text-slate-600 hover:bg-slate-200">
+                    <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                        <path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12" />
+                    </svg>
+                </button>
+            </div>
+            <div class="space-y-3 text-xs text-slate-600 leading-relaxed">
+                <div class="p-3 bg-slate-50 rounded-2xl border border-slate-200">
+                    <p class="font-extrabold text-slate-800 mb-1">Su Android (Chrome):</p>
+                    <p>Tocca i <strong>3 puntini in alto a destra</strong> e seleziona <strong>"Aggiungi a schermata Home"</strong> o <strong>"Installa app"</strong>.</p>
+                </div>
+                <div class="p-3 bg-slate-50 rounded-2xl border border-slate-200">
+                    <p class="font-extrabold text-slate-800 mb-1">Su iPhone (Safari):</p>
+                    <p>Tocca l'icona <strong>Condividi</strong> in basso (quadrato con freccia verso l'alto) e scegli <strong>"Aggiungi alla schermata Home"</strong>.</p>
+                </div>
+            </div>
+            <button type="button" id="btn-ok-pwa-modal"
+                class="w-full py-3 bg-posteBlue text-posteYellow font-extrabold text-sm rounded-xl">
+                Ho Capito
+            </button>
+        </div>
+    </div>
+
+    <!-- ========================================== -->
+    <!-- MODALE CONFERMA NUOVO TURNO (NO CONFIRM)   -->
+    <!-- ========================================== -->
+    <div id="modal-reset" class="hidden fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4">
+        <div class="bg-white w-full max-w-sm rounded-3xl p-5 shadow-2xl space-y-4">
+            <h3 class="text-base font-extrabold text-slate-900">Iniziare un nuovo giro?</h3>
+            <p class="text-xs text-slate-600 leading-relaxed">
+                Il percorso attuale e lo stato delle spunte verranno azzerati per permetterti di caricare una nuova lista di pacchi.
+            </p>
+            <div class="grid grid-cols-2 gap-2.5 pt-1">
+                <button type="button" id="btn-cancel-reset"
+                    class="py-2.5 px-4 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-xs rounded-xl">
+                    Annulla
+                </button>
+                <button type="button" id="btn-confirm-reset"
+                    class="py-2.5 px-4 bg-red-600 hover:bg-red-700 text-white font-extrabold text-xs rounded-xl">
+                    Sì, Nuovo Giro
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Contenitore Notifiche Toast -->
+    <div id="toast-container" class="fixed bottom-4 left-4 right-4 max-w-md mx-auto z-50 space-y-2 pointer-events-none"></div>
+
+    <!-- ========================================== -->
+    <!-- LOGICA APPLICATIVA JAVASCRIPT (KEYLESS)    -->
+    <!-- ========================================== -->
+    <script>
+        const STORAGE_KEYS = {
+            START_ADDR: "poste_opt_start_address",
+            END_ADDR: "poste_opt_end_address",
+            ACTIVE_SHIFT: "poste_opt_active_shift_v2",
+            GEO_CACHE: "poste_opt_geocache_v2"
+        };
+
+        const DEFAULT_START = "Via degli Arcelli, Roma";
+        const DEFAULT_END = "Via degli Arcelli, Roma";
+        const ANOMALY_DISTANCE_KM = 25;
+
+        const EXAMPLE_ADDRESSES = [
+            "Via Apricale 62, Roma",
+            "Via Giambattista Pagano 71, Roma",
+            "Via Fulvio Maroi 28, Roma",
+            "Via Filippo Vassalli 33, Roma",
+            "Via Gregorio XI 107, Roma",
+            "Via Gregorio XI 4, Roma",
+            "Via del Carmelo 18, Santa Marinella",
+            "Via S. Giovanni della Croce 33, Roma",
+            "Via Nazareth 313, Roma",
+            "Via Olmo Gentile 16, Roma",
+            "Via Cornelia 164, Roma",
+            "Via Cornelia 498, Roma"
+        ];
+
+        const appState = {
+            currentStep: 1,
+            imageDataUrl: null,
+            rawAddresses: [],
+            forcedIncludeSet: new Set(),
+            activeRoute: null,
+            mapInstance: null,
+            mapLayerGroup: null
+        };
+
+        let lastGeocodeTimestamp = 0;
+
+        /**
+         * Utility: Escape HTML e Notifiche Toast
+         */
+        function escapeHtml(str) {
+            if (typeof str !== "string") return "";
+            return str
+                .replace(/&/g, "&amp;")
+                .replace(/</g, "&lt;")
+                .replace(/>/g, "&gt;")
+                .replace(/"/g, "&quot;")
+                .replace(/'/g, "&#039;");
+        }
+
+        function showToast(message, type = "info") {
+            const container = document.getElementById("toast-container");
+            if (!container) return;
+
+            const colors = {
+                success: "bg-green-700 text-white border-green-500",
+                error: "bg-red-600 text-white border-red-400",
+                warning: "bg-amber-600 text-white border-amber-400",
+                info: "bg-slate-900 text-white border-slate-700"
+            };
+
+            const toast = document.createElement("div");
+            toast.className = `${colors[type] || colors.info} border px-4 py-3 rounded-2xl shadow-lg text-xs font-bold flex items-center justify-between gap-2 transition-all duration-300 opacity-0 translate-y-2 pointer-events-auto`;
+            toast.innerHTML = `<span>${escapeHtml(message)}</span>`;
+            container.appendChild(toast);
+
+            requestAnimationFrame(() => {
+                toast.classList.remove("opacity-0", "translate-y-2");
+            });
+
+            setTimeout(() => {
+                toast.classList.add("opacity-0", "translate-y-2");
+                setTimeout(() => toast.remove(), 300);
+            }, 3400);
+        }
+
+        /**
+         * Navigazione tra gli Step dell'App
+         */
+        function goToStep(stepNumber) {
+            appState.currentStep = stepNumber;
+
+            [1, 2, 3, 4].forEach(num => {
+                const view = document.getElementById(`view-step-${num}`);
+                if (view) {
+                    if (num === stepNumber) {
+                        view.classList.remove("hidden");
+                    } else {
+                        view.classList.add("hidden");
+                    }
+                }
+            });
+
+            // Aggiorna stato tab superiore
+            const activeTabStep = stepNumber === 3 ? 2 : stepNumber;
+            document.querySelectorAll(".step-tab").forEach(tab => {
+                const tabStep = parseInt(tab.dataset.navStep, 10);
+                const badge = tab.querySelector("span:first-child");
+                if (tabStep === activeTabStep) {
+                    tab.classList.add("text-posteBlue", "bg-blue-50");
+                    tab.classList.remove("text-slate-500");
+                    if (badge) {
+                        badge.classList.add("bg-posteBlue", "text-white");
+                        badge.classList.remove("bg-slate-200", "text-slate-600");
+                    }
+                } else {
+                    tab.classList.remove("text-posteBlue", "bg-blue-50");
+                    tab.classList.add("text-slate-500");
+                    if (badge) {
+                        badge.classList.remove("bg-posteBlue", "text-white");
+                        badge.classList.add("bg-slate-200", "text-slate-600");
+                    }
+                }
+            });
+
+            // Abilita/disabilita tab Percorso
+            const routeTab = document.getElementById("nav-tab-route");
+            if (routeTab) {
+                if (appState.activeRoute) {
+                    routeTab.disabled = false;
+                    routeTab.classList.remove("opacity-50", "cursor-not-allowed");
+                } else {
+                    routeTab.disabled = true;
+                    routeTab.classList.add("opacity-50", "cursor-not-allowed");
+                }
+            }
+
+            // Mostra barra avanzamento e bottone Nuovo Turno nello Step 4
+            const stickyProgress = document.getElementById("sticky-progress-container");
+            const resetBtn = document.getElementById("btn-reset-shift");
+            if (stepNumber === 4 && appState.activeRoute) {
+                stickyProgress?.classList.remove("hidden");
+                resetBtn?.classList.remove("hidden");
+                if (appState.mapInstance) {
+                    setTimeout(() => appState.mapInstance.invalidateSize(true), 120);
+                }
+            } else {
+                stickyProgress?.classList.add("hidden");
+                if (!appState.activeRoute) {
+                    resetBtn?.classList.add("hidden");
+                }
+            }
+
+            if (stepNumber === 2) {
+                renderStep2AddressInputs();
+            }
+
+            window.scrollTo({ top: 0, behavior: "smooth" });
+        }
+
+        /**
+         * STEP 1: Impostazioni Base Partenza / Arrivo
+         */
+        function initSettings() {
+            const startInput = document.getElementById("input-start-address");
+            const endInput = document.getElementById("input-end-address");
+
+            const savedStart = localStorage.getItem(STORAGE_KEYS.START_ADDR) || DEFAULT_START;
+            const savedEnd = localStorage.getItem(STORAGE_KEYS.END_ADDR) || DEFAULT_END;
+
+            startInput.value = savedStart;
+            endInput.value = savedEnd;
+
+            startInput.addEventListener("input", () => {
+                localStorage.setItem(STORAGE_KEYS.START_ADDR, startInput.value.trim());
+            });
+
+            endInput.addEventListener("input", () => {
+                localStorage.setItem(STORAGE_KEYS.END_ADDR, endInput.value.trim());
+            });
+
+            document.getElementById("btn-copy-start-to-end").addEventListener("click", () => {
+                endInput.value = startInput.value;
+                localStorage.setItem(STORAGE_KEYS.END_ADDR, endInput.value.trim());
+                showToast("Indirizzo di rientro allineato alla partenza", "info");
+            });
+        }
+
+        /**
+         * STEP 1: Caricamento Immagine, Pre-elaborazione OCR & Input Manuale
+         */
+        function initImageUpload() {
+            const fileInput = document.getElementById("image-file-input");
+            const dropzone = document.getElementById("upload-dropzone");
+            const previewWrapper = document.getElementById("image-preview-wrapper");
+            const previewEl = document.getElementById("image-preview-el");
+
+            fileInput.addEventListener("change", (e) => {
+                const file = e.target.files?.[0];
+                if (!file) return;
+
+                const reader = new FileReader();
+                reader.onload = (ev) => {
+                    appState.imageDataUrl = ev.target.result;
+                    previewEl.src = appState.imageDataUrl;
+                    dropzone.classList.add("hidden");
+                    previewWrapper.classList.remove("hidden");
+                };
+                reader.readAsDataURL(file);
+            });
+
+            document.getElementById("btn-remove-image").addEventListener("click", () => {
+                fileInput.value = "";
+                appState.imageDataUrl = null;
+                previewEl.src = "";
+                previewWrapper.classList.add("hidden");
+                dropzone.classList.remove("hidden");
+                document.getElementById("extraction-status-box").classList.add("hidden");
+            });
+
+            document.getElementById("btn-extract-ocr-offline").addEventListener("click", () => {
+                runOfflineOCR();
+            });
+
+            // Pannello inserimento manuale
+            const manualPanel = document.getElementById("manual-input-panel");
+            const chevron = document.getElementById("icon-manual-chevron");
+            document.getElementById("btn-toggle-manual").addEventListener("click", () => {
+                manualPanel.classList.toggle("hidden");
+                chevron.classList.toggle("rotate-180");
+            });
+
+            document.getElementById("btn-import-manual").addEventListener("click", () => {
+                const rawText = document.getElementById("textarea-manual-addresses").value || "";
+                const lines = rawText
+                    .split(/\r?\n/)
+                    .map(l => l.trim())
+                    .filter(l => l.length >= 4);
+
+                if (lines.length === 0) {
+                    showToast("Inserisci almeno un indirizzo valido.", "warning");
+                    return;
+                }
+
+                appState.rawAddresses = lines;
+                appState.forcedIncludeSet.clear();
+                goToStep(2);
+            });
+
+            // Carica Esempio Giro Roma
+            document.getElementById("btn-load-example").addEventListener("click", () => {
+                appState.rawAddresses = [...EXAMPLE_ADDRESSES];
+                appState.forcedIncludeSet.clear();
+                showToast("Caricati 12 indirizzi di esempio", "success");
+                goToStep(2);
+            });
+        }
+
+        /**
+         * Pre-elaborazione Canvas per migliorare la lettura OCR degli screenshot
+         */
+        function preprocessImageForOCR(dataUrl) {
+            return new Promise((resolve) => {
+                const img = new Image();
+                img.onload = () => {
+                    const scale = img.width < 1100 ? 1.8 : 1.2;
+                    const canvas = document.createElement("canvas");
+                    canvas.width = Math.round(img.width * scale);
+                    canvas.height = Math.round(img.height * scale);
+                    const ctx = canvas.getContext("2d");
+
+                    ctx.fillStyle = "#ffffff";
+                    ctx.fillRect(0, 0, canvas.width, canvas.height);
+                    ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+
+                    const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+                    const d = imgData.data;
+                    for (let i = 0; i < d.length; i += 4) {
+                        const gray = 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2];
+                        const contrasted = gray > 175 ? 255 : (gray < 105 ? 0 : gray);
+                        d[i] = contrasted;
+                        d[i + 1] = contrasted;
+                        d[i + 2] = contrasted;
+                    }
+                    ctx.putImageData(imgData, 0, 0);
+                    resolve(canvas.toDataURL("image/png"));
+                };
+                img.onerror = () => resolve(dataUrl);
+                img.src = dataUrl;
+            });
+        }
+
+        /**
+         * Estrae e pulisce gli indirizzi stradali dal testo riconosciuto dall'OCR
+         */
+        function parseAddressesFromOCRText(rawText) {
+            const streetPrefixes = /(via|viale|v\.le|piazza|p\.zza|piazzale|largo|corso|vicolo|circonvallazione|lungotevere|strada|borgata)\b/i;
+            const ignoreLineRegex = /^(ricerche recenti|indicazioni|avvia|salvati|recenti|oggi|ieri|posta|poste italiane|roma,?\s*rm)$/i;
+            const cityOnlyRegex = /^([a-zàèéìòù'\s]+),\s*(rm|roma|vt|ri|lt|fr)$/i;
+
+            const rawLines = rawText
+                .split(/\r?\n/)
+                .map(line => line.trim())
+                .filter(Boolean);
+
+            const extracted = [];
+
+            for (let i = 0; i < rawLines.length; i++) {
+                // Rimuove simboli spuri iniziali dovuti alle icone circolari di Maps (es. "© ", "O ", "@ ", "(1) ")
+                let clean = rawLines[i]
+                    .replace(/^[^a-zA-Z0-9]+/, "")
+                    .replace(/^[OQ0C@©®\(\)\[\]]+\s+(?=(via|viale|piazza|piazzale|largo|corso|vicolo|strada)\b)/i, "")
+                    .replace(/\s+/g, " ")
+                    .trim();
+
+                if (clean.length < 5 || ignoreLineRegex.test(clean)) continue;
+                if (/^\d{1,2}:\d{2}$/.test(clean)) continue; // Orario telefono in alto
+
+                if (streetPrefixes.test(clean)) {
+                    // Taglia eventuali caratteri residui prima del prefisso stradale
+                    const match = clean.match(streetPrefixes);
+                    if (match && match.index > 0 && match.index <= 4) {
+                        clean = clean.slice(match.index).trim();
+                    }
+
+                    // Controlla se la riga successiva indica il comune (es. "Santa Marinella, RM")
+                    let citySuffix = "Roma";
+                    if (i + 1 < rawLines.length) {
+                        const nextClean = rawLines[i + 1].replace(/^[^a-zA-Z]+/, "").trim();
+                        const cityMatch = nextClean.match(cityOnlyRegex);
+                        if (cityMatch) {
+                            citySuffix = cityMatch[1].trim();
+                            i++;
+                        }
+                    }
+
+                    // Evita duplicati di città se già presente nella riga
+                    if (!/,\s*(roma|santa marinella|fiumicino|guidonia|tivoli|pomezia|ciampino|rm)\b/i.test(clean)) {
+                        clean = `${clean}, ${citySuffix}`;
+                    }
+
+                    extracted.push(clean);
+                }
+            }
+
+            return [...new Set(extracted)];
+        }
+
+        /**
+         * Esegue Tesseract.js OCR 100% locale nel browser
+         */
+        async function runOfflineOCR() {
+            if (!appState.imageDataUrl) {
+                showToast("Carica prima una foto o uno screenshot.", "warning");
+                return;
+            }
+
+            if (typeof Tesseract === "undefined") {
+                showToast("Motore OCR non caricato. Usa l'inserimento manuale.", "error");
+                return;
+            }
+
+            const btnExtract = document.getElementById("btn-extract-ocr-offline");
+            const statusBox = document.getElementById("extraction-status-box");
+            const statusText = document.getElementById("extraction-status-text");
+            const progressBar = document.getElementById("extraction-progress-bar");
+
+            btnExtract.disabled = true;
+            btnExtract.classList.add("opacity-60");
+            statusBox.classList.remove("hidden");
+            statusText.textContent = "Ottimizzazione contrasto immagine...";
+            progressBar.style.width = "15%";
+
+            try {
+                const processedImg = await preprocessImageForOCR(appState.imageDataUrl);
+
+                const result = await Tesseract.recognize(processedImg, "ita", {
+                    logger: (m) => {
+                        if (m.status === "recognizing text" && typeof m.progress === "number") {
+                            const pct = Math.min(95, 25 + Math.round(m.progress * 70));
+                            progressBar.style.width = `${pct}%`;
+                            statusText.textContent = `Lettura indirizzi in corso (${pct}%)...`;
+                        } else if (m.status) {
+                            statusText.textContent = "Caricamento dizionario italiano...";
+                        }
+                    }
+                });
+
+                progressBar.style.width = "100%";
+                const detected = parseAddressesFromOCRText(result?.data?.text || "");
+
+                if (detected.length === 0) {
+                    showToast("Nessun indirizzo chiaro rilevato. Controlla o inserisci manualmente.", "warning");
+                    appState.rawAddresses = [""];
+                } else {
+                    showToast(`Estratti ${detected.length} indirizzi dalla foto!`, "success");
+                    appState.rawAddresses = detected;
+                }
+
+                appState.forcedIncludeSet.clear();
+                goToStep(2);
+
+            } catch (err) {
+                console.error("Errore OCR:", err);
+                showToast("Errore nella lettura della foto. Prova l'inserimento manuale.", "error");
+            } finally {
+                btnExtract.disabled = false;
+                btnExtract.classList.remove("opacity-60");
+                statusBox.classList.add("hidden");
+            }
+        }
+
+        /**
+         * STEP 2: Gestione Caselle di Testo Individuali per Ogni Indirizzo
+         */
+        function initStep2Controls() {
+            document.getElementById("btn-add-address-row").addEventListener("click", () => {
+                appState.rawAddresses.push("");
+                renderStep2AddressInputs();
+                const inputs = document.querySelectorAll("#step2-addresses-list input");
+                if (inputs.length > 0) {
+                    inputs[inputs.length - 1].focus();
+                }
+            });
+
+            document.getElementById("btn-append-roma").addEventListener("click", () => {
+                appState.rawAddresses = appState.rawAddresses.map(addr => {
+                    const trimmed = addr.trim();
+                    if (!trimmed) return "";
+                    if (/,\s*[a-zA-Zàèéìòù\s]+$/.test(trimmed)) return trimmed;
+                    return `${trimmed}, Roma`;
+                });
+                renderStep2AddressInputs();
+                showToast('Aggiunto ", Roma" agli indirizzi senza comune', "info");
+            });
+
+            document.getElementById("btn-calculate-route").addEventListener("click", () => {
+                const cleaned = appState.rawAddresses
+                    .map(a => a.trim())
+                    .filter(a => a.length >= 4);
+
+                if (cleaned.length === 0) {
+                    showToast("Inserisci almeno un indirizzo di consegna.", "warning");
+                    return;
+                }
+
+                appState.rawAddresses = cleaned;
+                runFullRouteOptimization();
+            });
+
+            document.getElementById("btn-back-to-step1").addEventListener("click", () => {
+                goToStep(1);
+            });
+        }
+
+        function renderStep2AddressInputs() {
+            const listContainer = document.getElementById("step2-addresses-list");
+            const countBadge = document.getElementById("badge-address-count");
+            if (!listContainer) return;
+
+            if (appState.rawAddresses.length === 0) {
+                appState.rawAddresses = [""];
+            }
+
+            listContainer.innerHTML = "";
+            countBadge.textContent = appState.rawAddresses.filter(a => a.trim().length > 0).length;
+
+            appState.rawAddresses.forEach((addr, index) => {
+                const row = document.createElement("div");
+                row.className = "flex items-center gap-2";
+                row.innerHTML = `
+                    <span class="w-6 h-6 rounded-full bg-blue-100 text-posteBlue text-xs font-extrabold flex items-center justify-center flex-shrink-0">
+                        ${index + 1}
+                    </span>
+                    <input type="text"
+                        value="${escapeHtml(addr)}"
+                        data-addr-idx="${index}"
+                        placeholder="Es. Via Cornelia 164, Roma"
+                        class="step2-addr-input flex-1 px-3 py-2.5 bg-slate-50 border border-slate-300 rounded-xl text-sm font-semibold text-slate-800 focus:outline-none focus:ring-2 focus:ring-posteBlue">
+                    <button type="button"
+                        data-remove-idx="${index}"
+                        title="Rimuovi indirizzo"
+                        class="p-2.5 rounded-xl bg-red-50 hover:bg-red-100 text-red-600 transition-colors flex-shrink-0">
+                        <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.2">
+                            <path stroke-linecap="round" stroke-linejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                        </svg>
+                    </button>
+                `;
+                listContainer.appendChild(row);
+            });
+
+            listContainer.querySelectorAll(".step2-addr-input").forEach(input => {
+                input.addEventListener("input", (e) => {
+                    const idx = parseInt(e.target.dataset.addrIdx, 10);
+                    appState.rawAddresses[idx] = e.target.value;
+                    countBadge.textContent = appState.rawAddresses.filter(a => a.trim().length > 0).length;
+                });
+            });
+
+            listContainer.querySelectorAll("button[data-remove-idx]").forEach(btn => {
+                btn.addEventListener("click", (e) => {
+                    const idx = parseInt(e.currentTarget.dataset.removeIdx, 10);
+                    appState.rawAddresses.splice(idx, 1);
+                    renderStep2AddressInputs();
+                });
+            });
+        }
+
+        /**
+         * Geocodifica Gratuita (Nominatim + Fallback senza civico + Photon) con Cache Locale
+         */
+        function loadGeoCache() {
+            try {
+                return JSON.parse(localStorage.getItem(STORAGE_KEYS.GEO_CACHE) || "{}");
+            } catch {
+                return {};
+            }
+        }
+
+        function saveGeoCache(cacheObj) {
+            try {
+                localStorage.setItem(STORAGE_KEYS.GEO_CACHE, JSON.stringify(cacheObj));
+            } catch {
+                // Ignora quota
+            }
+        }
+
+        async function throttleNominatim() {
+            const elapsed = Date.now() - lastGeocodeTimestamp;
+            if (elapsed < 1200) {
+                await new Promise(r => setTimeout(r, 1200 - elapsed));
+            }
+            lastGeocodeTimestamp = Date.now();
+        }
+
+        async function queryNominatimSingle(queryText) {
+            await throttleNominatim();
+            const url = `https://nominatim.openstreetmap.org/search?format=json&limit=1&countrycodes=it&q=${encodeURIComponent(queryText)}`;
+            const res = await fetchWithTimeout(url, 8000);
+            if (!res.ok) return null;
+            const data = await res.json();
+            if (Array.isArray(data) && data.length > 0) {
+                return {
+                    lat: parseFloat(data[0].lat),
+                    lon: parseFloat(data[0].lon),
+                    displayName: data[0].display_name
+                };
+            }
+            return null;
+        }
+
+        async function queryPhotonSingle(queryText) {
+            const url = `https://photon.komoot.io/api/?q=${encodeURIComponent(queryText)}&limit=1&lang=it`;
+            const res = await fetchWithTimeout(url, 8000);
+            if (!res.ok) return null;
+            const data = await res.json();
+            const feat = data?.features?.[0];
+            if (feat && Array.isArray(feat.geometry?.coordinates)) {
+                return {
+                    lat: parseFloat(feat.geometry.coordinates[1]),
+                    lon: parseFloat(feat.geometry.coordinates[0]),
+                    displayName: feat.properties?.name || queryText
+                };
+            }
+            return null;
+        }
+
+        async function geocodeAddress(rawAddress) {
+            const normalizedKey = rawAddress.trim().toLowerCase();
+            const cache = loadGeoCache();
+            if (cache[normalizedKey]) {
+                return { geo: cache[normalizedKey], fromCache: true };
+            }
+
+            const queryWithRoma = /roma|marinella|fiumicino|guidonia|tivoli|pomezia|ciampino|lazio/i.test(rawAddress)
+                ? rawAddress
+                : `${rawAddress}, Roma`;
+
+            let geo = null;
+            try {
+                // 1. Ricerca esatta su Nominatim
+                geo = await queryNominatimSingle(queryWithRoma);
+
+                // 2. Fallback senza numero civico (es. "Via Cornelia, Roma")
+                if (!geo) {
+                    const withoutCivic = queryWithRoma.replace(/,?\s*\d+[a-zA-Z]?\b/, "").trim();
+                    if (withoutCivic !== queryWithRoma) {
+                        geo = await queryNominatimSingle(withoutCivic);
+                    }
+                }
+
+                // 3. Fallback su Photon Komoot
+                if (!geo) {
+                    geo = await queryPhotonSingle(queryWithRoma);
+                }
+            } catch (err) {
+                console.warn("Errore geocodifica per:", rawAddress, err);
+            }
+
+            if (geo && Number.isFinite(geo.lat) && Number.isFinite(geo.lon)) {
+                cache[normalizedKey] = geo;
+                saveGeoCache(cache);
+                return { geo, fromCache: false };
+            }
+
+            return { geo: null, fromCache: false };
+        }
+
+        /**
+         * Calcolo Distanza Haversine, Matrice Stradale OSRM & Ottimizzazione Percorso
+         */
+        function haversineKm(lat1, lon1, lat2, lon2) {
+            const dLat = (lat2 - lat1) * Math.PI / 180;
+            const dLon = (lon2 - lon1) * Math.PI / 180;
+            const a = Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+                Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
+                Math.sin(dLon / 2) * Math.sin(dLon / 2);
+            return 6371 * (2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a)));
+        }
+
+        async function fetchWithTimeout(url, timeoutMs = 9000) {
+            const controller = new AbortController();
+            const timerId = setTimeout(() => controller.abort(), timeoutMs);
+            try {
+                const response = await fetch(url, { signal: controller.signal });
+                return response;
+            } finally {
+                clearTimeout(timerId);
+            }
+        }
+
+        /**
+         * Costruisce la matrice di fallback in secondi stimati (Haversine * 1.35 a 26 km/h)
+         */
+        function buildFallbackDurationMatrix(allNodes) {
+            const n = allNodes.length;
+            const matrix = Array.from({ length: n }, () => Array(n).fill(0));
+            for (let i = 0; i < n; i++) {
+                for (let j = 0; j < n; j++) {
+                    if (i === j) continue;
+                    const roadKm = haversineKm(allNodes[i].lat, allNodes[i].lon, allNodes[j].lat, allNodes[j].lon) * 1.35;
+                    matrix[i][j] = (roadKm / 26) * 3600;
+                }
+            }
+            return matrix;
+        }
+
+        /**
+         * Interroga OSRM Table API per ottenere i tempi reali di guida (in secondi) tra tutti i punti
+         */
+        async function fetchOSRMDurationMatrix(allNodes) {
+            const coordsParam = allNodes.map(n => `${n.lon.toFixed(6)},${n.lat.toFixed(6)}`).join(";");
+            const url = `https://router.project-osrm.org/table/v1/driving/${coordsParam}?annotations=duration`;
+
+            const res = await fetchWithTimeout(url, 9000);
+            if (!res.ok) {
+                throw new Error(`OSRM Table HTTP ${res.status}`);
+            }
+
+            const data = await res.json();
+            if (data.code !== "Ok" || !Array.isArray(data.durations)) {
+                throw new Error("Risposta OSRM Table non valida");
+            }
+
+            const fallback = buildFallbackDurationMatrix(allNodes);
+            const n = allNodes.length;
+            const sanitizedMatrix = Array.from({ length: n }, (_, i) =>
+                Array.from({ length: n }, (_, j) => {
+                    if (i === j) return 0;
+                    const val = data.durations[i]?.[j];
+                    return (typeof val === "number" && Number.isFinite(val) && val > 0) ? val : fallback[i][j];
+                })
+            );
+
+            return sanitizedMatrix;
+        }
+
+        /**
+         * Calcola il costo totale (in secondi) di una sequenza di indici sulla matrice asimmetrica
+         */
+        function computeTotalRouteCost(route, costMatrix) {
+            let total = 0;
+            for (let i = 0; i < route.length - 1; i++) {
+                total += costMatrix[route[i]][route[i + 1]];
+            }
+            return total;
+        }
+
+        /**
+         * Ottimizzatore TSP Asimmetrico (Nearest Neighbor + 2-Opt Asimmetrico + Or-Opt)
+         * Partenza (indice 0) e Arrivo (indice n-1) restano fissi.
+         */
+        function solveTSPWithCostMatrix(allNodes, costMatrix) {
+            const n = allNodes.length;
+            if (n <= 2) {
+                return n === 2 ? [0, 1] : [0];
+            }
+
+            // 1. Costruzione iniziale Nearest Neighbor basata sul minor tempo di guida
+            const route = [0];
+            const unvisited = new Set();
+            for (let i = 1; i < n - 1; i++) {
+                unvisited.add(i);
+            }
+
+            let current = 0;
+            while (unvisited.size > 0) {
+                let bestNext = -1;
+                let bestCost = Infinity;
+                for (const candidate of unvisited) {
+                    const cost = costMatrix[current][candidate];
+                    if (cost < bestCost) {
+                        bestCost = cost;
+                        bestNext = candidate;
+                    }
+                }
+                route.push(bestNext);
+                unvisited.delete(bestNext);
+                current = bestNext;
+            }
+            route.push(n - 1);
+
+            // 2. Raffinamento combinato 2-Opt Asimmetrico + Or-Opt (spostamento singola tappa)
+            let bestTotalCost = computeTotalRouteCost(route, costMatrix);
+            let improved = true;
+
+            while (improved) {
+                improved = false;
+
+                // Passo 2-Opt: inversione sotto-tratte (valutata sull'intera matrice asimmetrica)
+                for (let i = 1; i < route.length - 2; i++) {
+                    for (let k = i + 1; k < route.length - 1; k++) {
+                        const candidate = [
+                            ...route.slice(0, i),
+                            ...route.slice(i, k + 1).reverse(),
+                            ...route.slice(k + 1)
+                        ];
+                        const candidateCost = computeTotalRouteCost(candidate, costMatrix);
+                        if (candidateCost + 0.5 < bestTotalCost) {
+                            route.splice(0, route.length, ...candidate);
+                            bestTotalCost = candidateCost;
+                            improved = true;
+                        }
+                    }
+                }
+
+                // Passo Or-Opt: sposta una singola tappa in una posizione migliore lungo il percorso
+                for (let i = 1; i < route.length - 1; i++) {
+                    const node = route[i];
+                    const withoutNode = [...route.slice(0, i), ...route.slice(i + 1)];
+                    for (let j = 1; j < withoutNode.length; j++) {
+                        if (j === i) continue;
+                        const candidate = [
+                            ...withoutNode.slice(0, j),
+                            node,
+                            ...withoutNode.slice(j)
+                        ];
+                        const candidateCost = computeTotalRouteCost(candidate, costMatrix);
+                        if (candidateCost + 0.5 < bestTotalCost) {
+                            route.splice(0, route.length, ...candidate);
+                            bestTotalCost = candidateCost;
+                            improved = true;
+                            break;
+                        }
+                    }
+                    if (improved) break;
+                }
+            }
+
+            return route;
+        }
+
+        /**
+         * Scarica la geometria stradale reale (GeoJSON) e i totali reali da OSRM Route API
+         */
+        async function fetchOSRMRouteGeometry(orderedNodes) {
+            const coordsParam = orderedNodes.map(n => `${n.lon.toFixed(6)},${n.lat.toFixed(6)}`).join(";");
+            const url = `https://router.project-osrm.org/route/v1/driving/${coordsParam}?overview=full&geometries=geojson`;
+
+            const res = await fetchWithTimeout(url, 9000);
+            if (!res.ok) {
+                throw new Error(`OSRM Route HTTP ${res.status}`);
+            }
+
+            const data = await res.json();
+            const bestRoute = data?.routes?.[0];
+            if (data.code !== "Ok" || !bestRoute || !Array.isArray(bestRoute.geometry?.coordinates)) {
+                throw new Error("Geometria stradale OSRM non disponibile");
+            }
+
+            // Conversione da [lon, lat] (GeoJSON) a [lat, lon] (Leaflet)
+            const latLngs = bestRoute.geometry.coordinates.map(([lon, lat]) => [lat, lon]);
+            return {
+                latLngs,
+                durationSec: Math.round(bestRoute.duration),
+                distanceMeters: Math.round(bestRoute.distance)
+            };
+        }
+
+        async function runFullRouteOptimization() {
+            const startAddress = (document.getElementById("input-start-address").value || DEFAULT_START).trim();
+            const endAddress = (document.getElementById("input-end-address").value || DEFAULT_END).trim();
+
+            goToStep(3);
+
+            const progressBar = document.getElementById("calc-progress-bar");
+            const progressDetail = document.getElementById("calc-progress-detail");
+            const progressPercent = document.getElementById("calc-progress-percent");
+
+            const updateCalcUI = (pct, title, detail) => {
+                progressBar.style.width = `${pct}%`;
+                progressPercent.textContent = `${pct}%`;
+                if (title) document.getElementById("calc-step-title").textContent = title;
+                if (detail) progressDetail.textContent = detail;
+            };
+
+            try {
+                updateCalcUI(8, "Localizzazione sede...", `Partenza: ${startAddress}`);
+                const { geo: startGeo } = await geocodeAddress(startAddress);
+                if (!startGeo) {
+                    showToast("Impossibile trovare l'indirizzo di Partenza.", "error");
+                    goToStep(1);
+                    return;
+                }
+
+                const { geo: endGeo } = (endAddress.toLowerCase() === startAddress.toLowerCase())
+                    ? { geo: { ...startGeo, displayName: endAddress } }
+                    : await geocodeAddress(endAddress);
+
+                if (!endGeo) {
+                    showToast("Impossibile trovare l'indirizzo di Arrivo.", "error");
+                    goToStep(1);
+                    return;
+                }
+
+                const totalStops = appState.rawAddresses.length;
+                const validStops = [];
+                const anomalies = [];
+                const notFound = [];
+
+                for (let i = 0; i < totalStops; i++) {
+                    const addr = appState.rawAddresses[i];
+                    const pct = 15 + Math.round(((i + 1) / totalStops) * 60);
+                    updateCalcUI(pct, "Ricerca indirizzi sulla mappa...", `${i + 1}/${totalStops}: ${addr}`);
+
+                    const { geo } = await geocodeAddress(addr);
+                    if (!geo) {
+                        notFound.push(addr);
+                        continue;
+                    }
+
+                    const distFromStartKm = haversineKm(startGeo.lat, startGeo.lon, geo.lat, geo.lon);
+                    const isForced = appState.forcedIncludeSet.has(addr);
+
+                    if (distFromStartKm > ANOMALY_DISTANCE_KM && !isForced) {
+                        anomalies.push({
+                            address: addr,
+                            lat: geo.lat,
+                            lon: geo.lon,
+                            distanceKm: Math.round(distFromStartKm)
+                        });
+                    } else {
+                        validStops.push({
+                            address: addr,
+                            lat: geo.lat,
+                            lon: geo.lon,
+                            distanceKm: Math.round(distFromStartKm),
+                            wasAnomaly: distFromStartKm > ANOMALY_DISTANCE_KM
+                        });
+                    }
+                }
+
+                if (validStops.length === 0) {
+                    showToast("Nessuna tappa valida trovata entro 25 km.", "warning");
+                    goToStep(2);
+                    return;
+                }
+
+                const allNodes = [
+                    { type: "start", address: startAddress, lat: startGeo.lat, lon: startGeo.lon },
+                    ...validStops.map(s => ({ type: "stop", ...s })),
+                    { type: "end", address: endAddress, lat: endGeo.lat, lon: endGeo.lon }
+                ];
+
+                updateCalcUI(82, "Calcolo tempi reali su strada...", "Analisi sensi unici e viabilità (OSRM)");
+
+                let costMatrix;
+                let usedRealRoadRouting = true;
+
+                try {
+                    costMatrix = await fetchOSRMDurationMatrix(allNodes);
+                } catch (osrmErr) {
+                    console.warn("Fallback a stima Haversine (OSRM Table non disponibile):", osrmErr);
+                    costMatrix = buildFallbackDurationMatrix(allNodes);
+                    usedRealRoadRouting = false;
+                }
+
+                updateCalcUI(90, "Ottimizzazione sequenza tappe...", "Ricerca giro con minor tempo di guida");
+                const routeIndices = solveTSPWithCostMatrix(allNodes, costMatrix);
+                const orderedNodes = routeIndices.map(idx => allNodes[idx]);
+
+                updateCalcUI(96, "Tracciamento percorso sulle vie...", "Generazione itinerario stradale");
+
+                let routeLatLngs = orderedNodes.map(n => [n.lat, n.lon]);
+                let totalDurationSec = Math.round(computeTotalRouteCost(routeIndices, costMatrix));
+                let totalDistanceMeters = 0;
+
+                for (let i = 0; i < orderedNodes.length - 1; i++) {
+                    totalDistanceMeters += Math.round(
+                        haversineKm(orderedNodes[i].lat, orderedNodes[i].lon, orderedNodes[i + 1].lat, orderedNodes[i + 1].lon) * 1000 * 1.35
+                    );
+                }
+
+                try {
+                    const roadGeom = await fetchOSRMRouteGeometry(orderedNodes);
+                    routeLatLngs = roadGeom.latLngs;
+                    totalDurationSec = roadGeom.durationSec;
+                    totalDistanceMeters = roadGeom.distanceMeters;
+                    usedRealRoadRouting = true;
+                } catch (geomErr) {
+                    console.warn("Fallback geometria linea d'aria:", geomErr);
+                }
+
+                const activeShiftData = {
+                    start: orderedNodes[0],
+                    end: orderedNodes[orderedNodes.length - 1],
+                    stops: orderedNodes.slice(1, -1).map((stop, idx) => ({
+                        id: `stop_${idx}_${stop.address}`,
+                        order: idx + 1,
+                        address: stop.address,
+                        lat: stop.lat,
+                        lon: stop.lon,
+                        wasAnomaly: Boolean(stop.wasAnomaly),
+                        completed: false
+                    })),
+                    anomalies,
+                    notFound,
+                    latLngs: routeLatLngs,
+                    isRoadGeometry: usedRealRoadRouting,
+                    totalDurationSec,
+                    totalDistanceMeters,
+                    createdAt: Date.now()
+                };
+
+                appState.activeRoute = activeShiftData;
+                saveActiveShiftToStorage();
+
+                updateCalcUI(100, "Percorso pronto!", "Apertura dashboard...");
+                goToStep(4);
+                renderStep4Dashboard();
+                showToast(
+                    usedRealRoadRouting
+                        ? `Percorso stradale reale ottimizzato (${activeShiftData.stops.length} tappe)!`
+                        : `Percorso ottimizzato in modalità offline (${activeShiftData.stops.length} tappe)`,
+                    "success"
+                );
+
+            } catch (err) {
+                console.error("Errore ottimizzazione:", err);
+                showToast("Errore durante il calcolo del percorso.", "error");
+                goToStep(2);
+            }
+        }
+
+        function saveActiveShiftToStorage() {
+            if (!appState.activeRoute) return;
+            try {
+                localStorage.setItem(STORAGE_KEYS.ACTIVE_SHIFT, JSON.stringify(appState.activeRoute));
+            } catch {
+                // Ignora
+            }
+        }
+
+        function loadActiveShiftFromStorage() {
+            try {
+                const raw = localStorage.getItem(STORAGE_KEYS.ACTIVE_SHIFT);
+                if (!raw) return false;
+                const parsed = JSON.parse(raw);
+                if (parsed && Array.isArray(parsed.stops) && parsed.stops.length > 0) {
+                    appState.activeRoute = parsed;
+                    appState.rawAddresses = [
+                        ...parsed.stops.map(s => s.address),
+                        ...(parsed.anomalies || []).map(a => a.address)
+                    ];
+                    return true;
+                }
+            } catch {
+                return false;
+            }
+            return false;
+        }
+
+        /**
+         * STEP 4: DASHBOARD, LINK GOOGLE MAPS MULTI-FASE, MAPPA & CHECKLIST
+         */
+        function formatDuration(seconds) {
+            const totalMins = Math.max(1, Math.round(seconds / 60));
+            const hours = Math.floor(totalMins / 60);
+            const mins = totalMins % 60;
+            return hours === 0 ? `${mins} min` : `${hours}h ${mins.toString().padStart(2, "0")}m`;
+        }
+
+        function formatDistance(meters) {
+            return `${(meters / 1000).toFixed(1)} km`;
+        }
+
+        function buildGoogleMapsPhases(routeData) {
+            const fullSequence = [routeData.start, ...routeData.stops, routeData.end];
+            const phases = [];
+            const MAX_POINTS_PER_LINK = 10; // Limite massimo supportato da Google Maps URL
+            const STEP_SIZE = MAX_POINTS_PER_LINK - 1;
+
+            for (let i = 0; i < fullSequence.length - 1; i += STEP_SIZE) {
+                const chunk = fullSequence.slice(i, i + MAX_POINTS_PER_LINK);
+                if (chunk.length < 2) break;
+
+                const origin = chunk[0];
+                const destination = chunk[chunk.length - 1];
+                const waypoints = chunk.slice(1, -1);
+
+                let url = `https://www.google.com/maps/dir/?api=1&origin=${encodeURIComponent(origin.address)}&destination=${encodeURIComponent(destination.address)}&travelmode=driving`;
+                if (waypoints.length > 0) {
+                    const wpParam = waypoints.map(w => encodeURIComponent(w.address)).join("%7C");
+                    url += `&waypoints=${wpParam}`;
+                }
+
+                phases.push({
+                    phaseNumber: phases.length + 1,
+                    fromLabel: origin.order ? `Tappa ${origin.order}` : "Partenza",
+                    toLabel: destination.order ? `Tappa ${destination.order}` : "Rientro",
+                    stopOrders: chunk.filter(item => typeof item.order === "number").map(item => item.order),
+                    url
+                });
+            }
+            return phases;
+        }
+
+        function renderStep4Dashboard() {
+            const data = appState.activeRoute;
+            if (!data) return;
+
+            document.getElementById("stat-duration").textContent = formatDuration(data.totalDurationSec);
+            document.getElementById("stat-distance").textContent = formatDistance(data.totalDistanceMeters);
+            updateChecklistProgressUI();
+
+            // Sezione Anomalie (> 25 km)
+            const anomaliesSection = document.getElementById("anomalies-section");
+            const anomaliesList = document.getElementById("anomalies-list");
+            anomaliesList.innerHTML = "";
+
+            if (data.anomalies && data.anomalies.length > 0) {
+                anomaliesSection.classList.remove("hidden");
+                data.anomalies.forEach(anom => {
+                    const li = document.createElement("li");
+                    li.className = "bg-red-700/80 border border-red-400/40 rounded-xl p-3 flex items-center justify-between gap-2";
+                    li.innerHTML = `
+                        <div class="min-w-0">
+                            <p class="text-xs font-extrabold text-white truncate">${escapeHtml(anom.address)}</p>
+                            <p class="text-[11px] text-red-200">Distanza: ~${anom.distanceKm} km dalla sede</p>
+                        </div>
+                        <button type="button" data-include-anomaly="${escapeHtml(anom.address)}"
+                            class="px-2.5 py-1.5 bg-white hover:bg-posteYellow text-red-700 font-extrabold text-[11px] rounded-lg flex-shrink-0 transition-colors">
+                            Includi
+                        </button>
+                    `;
+                    anomaliesList.appendChild(li);
+                });
+
+                anomaliesList.querySelectorAll("button[data-include-anomaly]").forEach(btn => {
+                    btn.addEventListener("click", (e) => {
+                        appState.forcedIncludeSet.add(e.currentTarget.dataset.includeAnomaly);
+                        runFullRouteOptimization();
+                    });
+                });
+            } else {
+                anomaliesSection.classList.add("hidden");
+            }
+
+            // Sezione Indirizzi non trovati
+            const notFoundSection = document.getElementById("notfound-section");
+            const notFoundList = document.getElementById("notfound-list");
+            if (data.notFound && data.notFound.length > 0) {
+                notFoundSection.classList.remove("hidden");
+                notFoundList.textContent = data.notFound.join(" • ");
+            } else {
+                notFoundSection.classList.add("hidden");
+            }
+
+            // Bottoni Fasi Google Maps
+            const phases = buildGoogleMapsPhases(data);
+            const phasesContainer = document.getElementById("gmaps-phases-container");
+            document.getElementById("badge-phases-count").textContent = phases.length === 1 ? "1 Fase" : `${phases.length} Fasi`;
+            phasesContainer.innerHTML = "";
+
+            const stopToPhaseMap = {};
+            phases.forEach(p => {
+                p.stopOrders.forEach(orderNum => {
+                    if (!stopToPhaseMap[orderNum]) stopToPhaseMap[orderNum] = p.phaseNumber;
+                });
+
+                const isPrimary = p.phaseNumber === 1;
+                const a = document.createElement("a");
+                a.href = p.url;
+                a.target = "_blank";
+                a.rel = "noopener noreferrer";
+                a.className = `w-full p-3.5 rounded-2xl border shadow-sm flex items-center justify-between gap-3 transition-transform active:scale-[0.98] ${
+                    isPrimary
+                        ? "bg-posteYellow text-posteBlue border-posteYellowDark"
+                        : "bg-posteBlue text-posteYellow border-posteBlueDark"
+                }`;
+                a.innerHTML = `
+                    <div class="flex items-center gap-3 min-w-0">
+                        <div class="w-9 h-9 rounded-xl ${isPrimary ? "bg-posteBlue text-posteYellow" : "bg-posteYellow text-posteBlue"} font-black text-sm flex items-center justify-center flex-shrink-0">
+                            ${p.phaseNumber}
+                        </div>
+                        <div class="text-left min-w-0">
+                            <p class="text-sm font-extrabold">Apri Fase ${p.phaseNumber} su Google Maps</p>
+                            <p class="text-[11px] font-semibold opacity-85 truncate">${p.fromLabel} ➔ ${p.toLabel}</p>
+                        </div>
+                    </div>
+                    <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.4">
+                        <path stroke-linecap="round" stroke-linejoin="round" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
+                    </svg>
+                `;
+                phasesContainer.appendChild(a);
+            });
+
+            renderDeliveryChecklist(data, stopToPhaseMap);
+            renderInteractiveMap(data, true);
+        }
+
+        function renderDeliveryChecklist(data, stopToPhaseMap) {
+            const container = document.getElementById("delivery-checklist-container");
+            container.innerHTML = "";
+
+            container.innerHTML += `
+                <div class="p-3.5 bg-blue-50/50 flex items-center gap-3">
+                    <div class="w-8 h-8 rounded-full bg-posteBlue text-posteYellow font-extrabold text-xs flex items-center justify-center flex-shrink-0">P</div>
+                    <div class="flex-1 min-w-0">
+                        <span class="text-[10px] font-extrabold uppercase text-posteBlue">Partenza</span>
+                        <p class="text-xs font-bold text-slate-800 truncate">${escapeHtml(data.start.address)}</p>
+                    </div>
+                </div>
+            `;
+
+            data.stops.forEach((stop, index) => {
+                const phaseNum = stopToPhaseMap[stop.order] || 1;
+                const singleNavUrl = `https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(stop.address)}&travelmode=driving`;
+
+                const row = document.createElement("div");
+                row.className = `p-3.5 flex items-center gap-3 transition-colors ${stop.completed ? "bg-slate-50/90" : "bg-white hover:bg-slate-50/60"}`;
+                row.innerHTML = `
+                    <label class="flex items-center gap-3 flex-1 min-w-0 cursor-pointer select-none py-0.5">
+                        <input type="checkbox" class="delivery-checkbox hidden" data-stop-index="${index}" ${stop.completed ? "checked" : ""}>
+                        <div class="custom-check-box w-7 h-7 rounded-xl border-2 ${stop.completed ? "bg-green-600 border-green-600" : "border-slate-300 bg-white"} flex items-center justify-center flex-shrink-0 transition-colors">
+                            <svg class="check-icon ${stop.completed ? "block" : "hidden"} w-4 h-4 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M5 13l4 4L19 7"></path>
+                            </svg>
+                        </div>
+                        <div class="stop-badge w-6 h-6 rounded-full ${stop.completed ? "bg-slate-200 text-slate-500" : "bg-posteBlue text-white"} font-extrabold text-xs flex items-center justify-center flex-shrink-0">
+                            ${stop.order}
+                        </div>
+                        <div class="flex-1 min-w-0">
+                            <p class="stop-title text-sm font-bold leading-snug break-words ${stop.completed ? "line-through text-slate-400" : "text-slate-800"}">${escapeHtml(stop.address)}</p>
+                            <div class="flex items-center gap-2 mt-0.5">
+                                <span class="text-[10px] font-bold px-1.5 py-0.5 rounded bg-slate-100 text-slate-500">Fase ${phaseNum}</span>
+                            </div>
+                        </div>
+                    </label>
+                    <a href="${singleNavUrl}" target="_blank" rel="noopener noreferrer"
+                        class="p-2.5 rounded-xl bg-slate-100 hover:bg-posteYellow text-posteBlue transition-colors flex-shrink-0"
+                        title="Naviga solo a questo indirizzo">
+                        <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.2">
+                            <path stroke-linecap="round" stroke-linejoin="round" d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z" />
+                            <path stroke-linecap="round" stroke-linejoin="round" d="M15 11a3 3 0 11-6 0 3 3 0 016 0z" />
+                        </svg>
+                    </a>
+                `;
+                container.appendChild(row);
+            });
+
+            container.innerHTML += `
+                <div class="p-3.5 bg-slate-100/70 flex items-center gap-3">
+                    <div class="w-8 h-8 rounded-full bg-slate-800 text-white font-extrabold text-xs flex items-center justify-center flex-shrink-0">A</div>
+                    <div class="flex-1 min-w-0">
+                        <span class="text-[10px] font-extrabold uppercase text-slate-500">Rientro</span>
+                        <p class="text-xs font-bold text-slate-800 truncate">${escapeHtml(data.end.address)}</p>
+                    </div>
+                </div>
+            `;
+
+            container.querySelectorAll(".delivery-checkbox").forEach(cb => {
+                cb.addEventListener("change", (e) => {
+                    const idx = parseInt(e.target.dataset.stopIndex, 10);
+                    const isChecked = e.target.checked;
+                    appState.activeRoute.stops[idx].completed = isChecked;
+                    saveActiveShiftToStorage();
+                    updateChecklistProgressUI();
+
+                    const row = e.target.closest("div");
+                    const titleEl = row.querySelector(".stop-title");
+                    const boxEl = row.querySelector(".custom-check-box");
+                    const iconEl = row.querySelector(".check-icon");
+                    const badgeEl = row.querySelector(".stop-badge");
+
+                    if (isChecked) {
+                        row.classList.add("bg-slate-50/90");
+                        row.classList.remove("bg-white");
+                        titleEl.classList.add("line-through", "text-slate-400");
+                        titleEl.classList.remove("text-slate-800");
+                        boxEl.classList.add("bg-green-600", "border-green-600");
+                        boxEl.classList.remove("border-slate-300", "bg-white");
+                        iconEl.classList.remove("hidden");
+                        badgeEl.classList.add("bg-slate-200", "text-slate-500");
+                        badgeEl.classList.remove("bg-posteBlue", "text-white");
+                    } else {
+                        row.classList.remove("bg-slate-50/90");
+                        row.classList.add("bg-white");
+                        titleEl.classList.remove("line-through", "text-slate-400");
+                        titleEl.classList.add("text-slate-800");
+                        boxEl.classList.remove("bg-green-600", "border-green-600");
+                        boxEl.classList.add("border-slate-300", "bg-white");
+                        iconEl.classList.add("hidden");
+                        badgeEl.classList.remove("bg-slate-200", "text-slate-500");
+                        badgeEl.classList.add("bg-posteBlue", "text-white");
+                    }
+
+                    renderInteractiveMap(appState.activeRoute, false);
+                });
+            });
+        }
+
+        function updateChecklistProgressUI() {
+            const data = appState.activeRoute;
+            if (!data) return;
+            const total = data.stops.length;
+            const completed = data.stops.filter(s => s.completed).length;
+            const pct = total > 0 ? Math.round((completed / total) * 100) : 0;
+
+            document.getElementById("stat-delivered").textContent = `${completed} / ${total}`;
+            document.getElementById("turn-progress-bar").style.width = `${pct}%`;
+
+            if (total > 0 && completed === total) {
+                showToast("Ottimo lavoro! Hai completato tutte le consegne!", "success");
+            }
+        }
+
+        function renderInteractiveMap(data, fitBounds = true) {
+            const mapEl = document.getElementById("route-map");
+            if (!mapEl) return;
+
+            if (typeof L === "undefined") {
+                mapEl.innerHTML = `<div class="h-full flex items-center justify-center p-4 text-center text-xs font-bold text-slate-500">Libreria mappa non disponibile offline. Usa i pulsanti Google Maps qui sopra per navigare.</div>`;
+                return;
+            }
+
+            if (!appState.mapInstance) {
+                appState.mapInstance = L.map("route-map", {
+                    zoomControl: true,
+                    attributionControl: false
+                }).setView([data.start.lat, data.start.lon], 13);
+
+                // Layer principale Esri World Street Map (gratuito, senza API key e senza blocchi Referer/403)
+                const primaryTiles = L.tileLayer("https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}", {
+                    maxZoom: 19
+                });
+
+                // Fallback automatico su Esri World Topo Map
+                let fallbackActivated = false;
+                primaryTiles.on("tileerror", () => {
+                    if (!fallbackActivated) {
+                        fallbackActivated = true;
+                        L.tileLayer("https://server.arcgisonline.com/ArcGIS/rest/services/World_Topo_Map/MapServer/tile/{z}/{y}/{x}", {
+                            maxZoom: 19
+                        }).addTo(appState.mapInstance);
+                    }
+                });
+
+                primaryTiles.addTo(appState.mapInstance);
+                appState.mapLayerGroup = L.layerGroup().addTo(appState.mapInstance);
+
+                if (typeof ResizeObserver !== "undefined") {
+                    const ro = new ResizeObserver(() => {
+                        if (appState.mapInstance) {
+                            appState.mapInstance.invalidateSize(true);
+                        }
+                    });
+                    ro.observe(mapEl);
+                }
+            }
+
+            appState.mapLayerGroup.clearLayers();
+            const boundsPoints = [];
+
+            const routingBadge = document.getElementById("badge-routing-mode");
+            if (routingBadge) {
+                if (data.isRoadGeometry) {
+                    routingBadge.textContent = "Stradale Reale";
+                    routingBadge.className = "text-[10px] font-extrabold px-2 py-0.5 rounded-full bg-green-100 text-green-800";
+                } else {
+                    routingBadge.textContent = "Stima Offline";
+                    routingBadge.className = "text-[10px] font-extrabold px-2 py-0.5 rounded-full bg-amber-100 text-amber-800";
+                }
+            }
+
+            // Linea percorso (continua lungo le strade reali se OSRM disponibile, tratteggiata se fallback)
+            if (Array.isArray(data.latLngs) && data.latLngs.length >= 2) {
+                if (data.isRoadGeometry) {
+                    L.polyline(data.latLngs, {
+                        color: "#ffffff",
+                        weight: 7,
+                        opacity: 0.85
+                    }).addTo(appState.mapLayerGroup);
+
+                    L.polyline(data.latLngs, {
+                        color: "#0039A6",
+                        weight: 4.5,
+                        opacity: 0.92
+                    }).addTo(appState.mapLayerGroup);
+                } else {
+                    L.polyline(data.latLngs, {
+                        color: "#0039A6",
+                        weight: 4,
+                        opacity: 0.75,
+                        dashArray: "8, 6"
+                    }).addTo(appState.mapLayerGroup);
+                }
+            }
+
+            // Marker Partenza
+            const startIcon = L.divIcon({
+                className: "custom-div-icon",
+                html: `<div class="marker-pin marker-start">P</div>`,
+                iconSize: [36, 36],
+                iconAnchor: [18, 18]
+            });
+            L.marker([data.start.lat, data.start.lon], { icon: startIcon, zIndexOffset: 500 })
+                .bindPopup(`<strong>Partenza:</strong><br>${escapeHtml(data.start.address)}`)
+                .addTo(appState.mapLayerGroup);
+            boundsPoints.push([data.start.lat, data.start.lon]);
+
+            // Marker Tappe Numerate
+            data.stops.forEach(stop => {
+                const stopIcon = L.divIcon({
+                    className: "custom-div-icon",
+                    html: `<div class="marker-pin marker-stop ${stop.completed ? "completed" : ""}">${stop.order}</div>`,
+                    iconSize: [32, 32],
+                    iconAnchor: [16, 16]
+                });
+                L.marker([stop.lat, stop.lon], { icon: stopIcon, zIndexOffset: 400 - stop.order })
+                    .bindPopup(`<strong>Tappa #${stop.order}:</strong><br>${escapeHtml(stop.address)}`)
+                    .addTo(appState.mapLayerGroup);
+                boundsPoints.push([stop.lat, stop.lon]);
+            });
+
+            // Marker Arrivo se diverso dalla Partenza
+            const sameStartEnd = Math.abs(data.start.lat - data.end.lat) < 0.0002 && Math.abs(data.start.lon - data.end.lon) < 0.0002;
+            if (!sameStartEnd) {
+                const endIcon = L.divIcon({
+                    className: "custom-div-icon",
+                    html: `<div class="marker-pin marker-end">A</div>`,
+                    iconSize: [34, 34],
+                    iconAnchor: [17, 17]
+                });
+                L.marker([data.end.lat, data.end.lon], { icon: endIcon, zIndexOffset: 450 })
+                    .bindPopup(`<strong>Rientro:</strong><br>${escapeHtml(data.end.address)}`)
+                    .addTo(appState.mapLayerGroup);
+                boundsPoints.push([data.end.lat, data.end.lon]);
+            }
+
+            if (fitBounds && boundsPoints.length > 0) {
+                const bounds = L.latLngBounds(boundsPoints);
+                appState.mapInstance.invalidateSize(true);
+                appState.mapInstance.fitBounds(bounds, {
+                    padding: [42, 42],
+                    maxZoom: 15
+                });
+                setTimeout(() => {
+                    if (!appState.mapInstance) return;
+                    appState.mapInstance.invalidateSize(true);
+                    appState.mapInstance.fitBounds(bounds, {
+                        padding: [42, 42],
+                        maxZoom: 15
+                    });
+                }, 150);
+            }
+        }
+
+        /**
+         * Inizializzazione Tab di Navigazione & Modali
+         */
+        function initNavigationAndModals() {
+            document.querySelectorAll(".step-tab").forEach(tab => {
+                tab.addEventListener("click", () => {
+                    if (tab.disabled) return;
+                    const step = parseInt(tab.dataset.navStep, 10);
+                    goToStep(step);
+                });
+            });
+
+            document.getElementById("btn-recenter-map").addEventListener("click", () => {
+                if (appState.activeRoute) {
+                    renderInteractiveMap(appState.activeRoute, true);
+                    showToast("Mappa centrata sul percorso", "info");
+                }
+            });
+
+            document.getElementById("btn-edit-addresses-from-route").addEventListener("click", () => {
+                goToStep(2);
+            });
+
+            // Modale PWA
+            const modalPwa = document.getElementById("modal-pwa");
+            document.getElementById("btn-open-pwa-modal").addEventListener("click", () => modalPwa.classList.remove("hidden"));
+            document.getElementById("btn-close-pwa-modal").addEventListener("click", () => modalPwa.classList.add("hidden"));
+            document.getElementById("btn-ok-pwa-modal").addEventListener("click", () => modalPwa.classList.add("hidden"));
+
+            // Modale Nuovo Turno
+            const modalReset = document.getElementById("modal-reset");
+            document.getElementById("btn-reset-shift").addEventListener("click", () => modalReset.classList.remove("hidden"));
+            document.getElementById("btn-cancel-reset").addEventListener("click", () => modalReset.classList.add("hidden"));
+            document.getElementById("btn-confirm-reset").addEventListener("click", () => {
+                localStorage.removeItem(STORAGE_KEYS.ACTIVE_SHIFT);
+                appState.activeRoute = null;
+                appState.rawAddresses = [];
+                appState.forcedIncludeSet.clear();
+                modalReset.classList.add("hidden");
+                goToStep(1);
+                showToast("Nuovo turno pronto", "info");
+            });
+        }
+
+        // Avvio Applicazione
+        document.addEventListener("DOMContentLoaded", () => {
+            initSettings();
+            initImageUpload();
+            initStep2Controls();
+            initNavigationAndModals();
+
+            if (loadActiveShiftFromStorage()) {
+                goToStep(4);
+                renderStep4Dashboard();
+            } else {
+                goToStep(1);
+            }
+        });
+    </script>
+</body>
+</html>

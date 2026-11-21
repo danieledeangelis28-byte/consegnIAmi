@@ -160,6 +160,36 @@
             box-shadow: 0 0 0 3px #f59e0b, 0 4px 10px rgba(0, 0, 0, 0.35);
         }
 
+        .marker-stop.current-next {
+            transform: scale(1.16);
+            box-shadow: 0 0 0 4px rgba(0, 57, 166, 0.28), 0 0 0 2px #0039A6, 0 6px 14px rgba(0, 57, 166, 0.4);
+            animation: pulseNextPin 2s infinite ease-in-out;
+        }
+
+        @keyframes pulseNextPin {
+            0%, 100% {
+                box-shadow: 0 0 0 3px rgba(0, 57, 166, 0.25), 0 4px 10px rgba(0, 57, 166, 0.35);
+            }
+            50% {
+                box-shadow: 0 0 0 7px rgba(254, 219, 0, 0.55), 0 6px 14px rgba(0, 57, 166, 0.45);
+            }
+        }
+
+        @keyframes viewStepEnter {
+            from {
+                opacity: 0;
+                transform: translateY(8px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
+        .step-view-animate {
+            animation: viewStepEnter 0.26s cubic-bezier(0.22, 1, 0.36, 1) forwards;
+        }
+
         .dragging-row {
             opacity: 0.72;
             transform: scale(0.99);
@@ -177,27 +207,28 @@
         }
     </style>
 </head>
-<body class="bg-slate-100 text-slate-900 font-sans min-h-screen flex flex-col">
+<body class="bg-[#EEF3FA] text-slate-900 font-sans min-h-screen flex flex-col selection:bg-posteYellow selection:text-posteBlue">
 
     <!-- ========================================== -->
-    <!-- HEADER PRINCIPALE & NAVIGAZIONE STEP       -->
+    <!-- HEADER PRINCIPALE & STEPPER A PILLOLE      -->
     <!-- ========================================== -->
-    <header class="sticky top-0 z-30 shadow-md">
+    <header class="sticky top-0 z-30 shadow-[0_6px_24px_-6px_rgba(0,40,117,0.22)]">
         <!-- Barra Superiore Brand -->
-        <div class="bg-posteBlue text-white px-4 py-3 flex items-center justify-between">
+        <div class="bg-gradient-to-r from-[#002875] via-[#0039A6] to-[#0047CC] text-white px-4 py-3 flex items-center justify-between border-b-2 border-posteYellow">
             <div class="flex items-center gap-2.5">
-                <div class="w-9 h-9 rounded-xl bg-posteYellow text-posteBlue font-black text-lg flex items-center justify-center shadow-sm">
-                    P
+                <div class="w-9 h-9 rounded-xl bg-posteYellow text-posteBlue font-black text-lg flex items-center justify-center shadow-sm overflow-hidden ring-1 ring-white/25">
+                    <img src="icona-192.png" alt="Logo" class="w-full h-full object-cover" onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';">
+                    <span class="hidden w-full h-full items-center justify-center">P</span>
                 </div>
                 <div>
-                    <h1 class="text-base font-extrabold leading-tight tracking-tight">Ottimizzatore Consegne</h1>
-                    <p class="text-[11px] text-blue-200 font-medium">Pianificatore Giro • Zero API Key</p>
+                    <h1 class="text-base font-extrabold leading-tight tracking-tight">ConsegnIA</h1>
+                    <p class="text-[11px] text-blue-100/90 font-medium">Ottimizzatore Giro • Zero API Key</p>
                 </div>
             </div>
 
             <div class="flex items-center gap-1.5">
                 <button type="button" id="btn-open-pwa-modal"
-                    class="px-2.5 py-1.5 rounded-xl bg-blue-800/80 hover:bg-blue-700 text-posteYellow text-xs font-bold flex items-center gap-1 transition-colors"
+                    class="px-2.5 py-1.5 rounded-xl bg-white/12 hover:bg-white/20 border border-white/15 text-posteYellow text-xs font-bold flex items-center gap-1 transition-all duration-200 active:scale-95"
                     title="Salva su schermata Home">
                     <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.2">
                         <path stroke-linecap="round" stroke-linejoin="round" d="M12 18h.01M8 21h8a2 2 0 002-2V5a2 2 0 00-2-2H8a2 2 0 00-2 2v14a2 2 0 002 2z" />
@@ -206,7 +237,7 @@
                 </button>
 
                 <button type="button" id="btn-reset-shift"
-                    class="hidden px-2.5 py-1.5 rounded-xl bg-red-600 hover:bg-red-700 text-white text-xs font-bold flex items-center gap-1 transition-colors">
+                    class="hidden px-2.5 py-1.5 rounded-xl bg-red-600 hover:bg-red-700 text-white text-xs font-bold flex items-center gap-1 shadow-sm transition-all duration-200 active:scale-95">
                     <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.2">
                         <path stroke-linecap="round" stroke-linejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
                     </svg>
@@ -215,39 +246,42 @@
             </div>
         </div>
 
-        <!-- Barra Tab Navigazione Step -->
-        <nav class="bg-white border-b border-slate-200 grid grid-cols-3 text-xs font-bold">
-            <button type="button" data-nav-step="1"
-                class="step-tab py-2.5 px-2 flex items-center justify-center gap-1.5 text-posteBlue bg-blue-50 border-r border-slate-100 transition-colors">
-                <span class="w-5 h-5 rounded-full bg-posteBlue text-white text-[11px] flex items-center justify-center font-extrabold">1</span>
-                <span>Carica</span>
-            </button>
-            <button type="button" data-nav-step="2"
-                class="step-tab py-2.5 px-2 flex items-center justify-center gap-1.5 text-slate-500 border-r border-slate-100 transition-colors">
-                <span class="w-5 h-5 rounded-full bg-slate-200 text-slate-600 text-[11px] flex items-center justify-center font-extrabold">2</span>
-                <span>Verifica</span>
-            </button>
-            <button type="button" id="nav-tab-route" data-nav-step="4" disabled
-                class="step-tab py-2.5 px-2 flex items-center justify-center gap-1.5 text-slate-500 opacity-50 cursor-not-allowed transition-colors">
-                <span class="w-5 h-5 rounded-full bg-slate-200 text-slate-600 text-[11px] flex items-center justify-center font-extrabold">3</span>
-                <span>Percorso</span>
-            </button>
+        <!-- Stepper a Pillole -->
+        <nav class="bg-white/95 backdrop-blur-md border-b border-blue-950/10 px-3 py-2">
+            <div class="max-w-lg mx-auto bg-slate-200/75 p-1 rounded-2xl grid grid-cols-3 gap-1 text-xs font-bold">
+                <button type="button" data-nav-step="1"
+                    class="step-tab py-2 px-2 rounded-xl flex items-center justify-center gap-1.5 bg-posteBlue text-white shadow-sm transition-all duration-200">
+                    <span class="step-badge-num w-5 h-5 rounded-full bg-posteYellow text-posteBlue text-[11px] flex items-center justify-center font-black tabular-nums">1</span>
+                    <span>Carica</span>
+                </button>
+                <button type="button" data-nav-step="2"
+                    class="step-tab py-2 px-2 rounded-xl flex items-center justify-center gap-1.5 text-slate-600 hover:text-slate-800 transition-all duration-200">
+                    <span class="step-badge-num w-5 h-5 rounded-full bg-white text-slate-600 text-[11px] flex items-center justify-center font-extrabold tabular-nums">2</span>
+                    <span>Verifica</span>
+                </button>
+                <button type="button" id="nav-tab-route" data-nav-step="4" disabled
+                    class="step-tab py-2 px-2 rounded-xl flex items-center justify-center gap-1.5 text-slate-500 opacity-50 cursor-not-allowed transition-all duration-200">
+                    <span class="step-badge-num w-5 h-5 rounded-full bg-white text-slate-600 text-[11px] flex items-center justify-center font-extrabold tabular-nums">3</span>
+                    <span>Percorso</span>
+                </button>
+            </div>
         </nav>
 
         <!-- Barra Avanzamento Turno (Visibile nello Step 4) -->
-        <div id="sticky-progress-container" class="hidden bg-white/95 backdrop-blur-sm border-b border-slate-200 px-4 py-2.5">
+        <div id="sticky-progress-container" class="hidden bg-gradient-to-r from-blue-50/95 via-white/95 to-amber-50/90 backdrop-blur-md border-b border-blue-950/10 px-4 py-2.5 transition-all duration-300">
             <div class="max-w-lg mx-auto space-y-1.5">
-                <div class="flex items-center justify-between text-xs">
-                    <span class="font-extrabold text-posteBlue">
-                        Consegnati: <span id="stat-delivered" class="text-green-700">0 / 0</span>
+                <div class="flex items-center justify-between text-xs tabular-nums">
+                    <span class="font-extrabold text-posteBlue flex items-center gap-1.5">
+                        <span class="w-2 h-2 rounded-full bg-green-600 animate-pulse"></span>
+                        Consegnati: <span id="stat-delivered" class="text-green-700 font-black">0 / 0</span>
                     </span>
-                    <div class="flex items-center gap-3 text-slate-600 font-bold">
-                        <span>⏱ <span id="stat-duration">--</span></span>
-                        <span>🛣 <span id="stat-distance">--</span></span>
+                    <div class="flex items-center gap-2 text-slate-700 font-bold">
+                        <span class="px-2 py-0.5 rounded-lg bg-white border border-slate-200/80 shadow-2xs">⏱ <span id="stat-duration">--</span></span>
+                        <span class="px-2 py-0.5 rounded-lg bg-white border border-slate-200/80 shadow-2xs">🛣 <span id="stat-distance">--</span></span>
                     </div>
                 </div>
-                <div class="w-full bg-slate-200 rounded-full h-2 overflow-hidden">
-                    <div id="turn-progress-bar" class="bg-green-600 h-2 rounded-full transition-all duration-300" style="width: 0%"></div>
+                <div class="w-full bg-slate-200/90 rounded-full h-2 overflow-hidden p-0.5">
+                    <div id="turn-progress-bar" class="bg-gradient-to-r from-posteBlue via-emerald-500 to-green-600 h-1 rounded-full transition-all duration-500 ease-out" style="width: 0%"></div>
                 </div>
             </div>
         </div>
@@ -264,10 +298,10 @@
         <div id="view-step-1" class="space-y-4">
 
             <!-- Card 1: Impostazioni Sede Partenza / Arrivo -->
-            <section class="bg-white rounded-2xl shadow-sm border border-slate-200/80 p-4 space-y-3.5">
+            <section class="bg-white rounded-3xl shadow-[0_4px_20px_-4px_rgba(0,57,166,0.08)] border border-blue-950/[0.06] p-4 space-y-3.5 transition-all duration-200">
                 <div class="flex items-center justify-between">
                     <h2 class="text-sm font-extrabold text-slate-800 uppercase tracking-wide flex items-center gap-1.5">
-                        <span class="w-2 h-2 rounded-full bg-posteBlue"></span>
+                        <span class="w-2.5 h-2.5 rounded-full bg-posteBlue ring-4 ring-blue-100"></span>
                         Base di Partenza e Rientro
                     </h2>
                     <button type="button" id="btn-copy-start-to-end"
@@ -294,7 +328,7 @@
             </section>
 
             <!-- Card 2: Caricamento Foto / Screenshot -->
-            <section class="bg-white rounded-2xl shadow-sm border border-slate-200/80 p-4 space-y-4">
+            <section class="bg-white rounded-3xl shadow-[0_4px_20px_-4px_rgba(0,57,166,0.08)] border border-blue-950/[0.06] p-4 space-y-4 transition-all duration-200">
                 <div>
                     <h2 class="text-base font-extrabold text-slate-800">Carica Foto o Screenshot Indirizzi</h2>
                     <p class="text-xs text-slate-500 mt-0.5">Scatta una foto alla distinta o carica uno screenshot dal telefono.</p>
@@ -426,13 +460,13 @@
         <!-- STEP 2: VERIFICA RAPIDA INDIRIZZI          -->
         <!-- ========================================== -->
         <div id="view-step-2" class="hidden space-y-4">
-            <section class="bg-white rounded-2xl shadow-sm border border-slate-200/80 p-4 space-y-4">
+            <section class="bg-white rounded-3xl shadow-[0_4px_20px_-4px_rgba(0,57,166,0.08)] border border-blue-950/[0.06] p-4 space-y-4 transition-all duration-200">
                 <div class="flex items-center justify-between">
                     <div>
                         <h2 class="text-base font-extrabold text-slate-800">Verifica Indirizzi Estratti</h2>
                         <p class="text-xs text-slate-500">Controlla, segna priorità (★) o modifica le tappe.</p>
                     </div>
-                    <span id="badge-address-count" class="bg-posteBlue text-posteYellow text-xs font-extrabold px-2.5 py-1 rounded-full">0</span>
+                    <span id="badge-address-count" class="bg-posteBlue text-posteYellow text-xs font-extrabold px-2.5 py-1 rounded-full tabular-nums">0</span>
                 </div>
 
                 <!-- Lista Caselle di Testo Individuali (Una per Indirizzo) -->
@@ -476,7 +510,7 @@
         <!-- STEP 3: CALCOLO IN CORSO                   -->
         <!-- ========================================== -->
         <div id="view-step-3" class="hidden space-y-4">
-            <section class="bg-white rounded-2xl shadow-sm border border-slate-200/80 p-6 text-center space-y-4">
+            <section class="bg-white rounded-3xl shadow-[0_4px_20px_-4px_rgba(0,57,166,0.08)] border border-blue-950/[0.06] p-6 text-center space-y-4">
                 <div class="w-14 h-14 rounded-2xl bg-posteBlue text-posteYellow mx-auto flex items-center justify-center shadow-md">
                     <svg class="animate-spin h-7 w-7" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
                         <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
@@ -530,7 +564,7 @@
             </section>
 
             <!-- Card Avvio Navigatore Google Maps Multi-Fase -->
-            <section class="bg-white rounded-2xl shadow-sm border border-slate-200/80 p-4 space-y-3">
+            <section class="bg-white rounded-3xl shadow-[0_4px_20px_-4px_rgba(0,57,166,0.08)] border border-blue-950/[0.06] p-4 space-y-3">
                 <div class="flex items-center justify-between">
                     <div>
                         <h2 class="text-sm font-extrabold text-slate-800 uppercase tracking-wide">Navigazione Google Maps</h2>
@@ -542,30 +576,38 @@
                 <div id="gmaps-phases-container" class="space-y-2.5"></div>
             </section>
 
-            <!-- Mappa Interattiva -->
-            <section class="bg-white rounded-2xl shadow-sm border border-slate-200/80 p-3 space-y-2.5">
-                <div class="flex items-center justify-between px-1">
-                    <div class="flex items-center gap-2">
-                        <span class="text-xs font-extrabold text-slate-700 uppercase tracking-wide">Mappa del Giro</span>
-                        <span id="badge-routing-mode" class="text-[10px] font-extrabold px-2 py-0.5 rounded-full bg-green-100 text-green-800">Stradale Reale</span>
+            <!-- Mappa Interattiva con Controlli Flottanti -->
+            <section class="bg-white rounded-3xl shadow-[0_4px_20px_-4px_rgba(0,57,166,0.08)] border border-blue-950/[0.06] p-2.5">
+                <div class="relative rounded-2xl overflow-hidden border border-slate-200/90 bg-slate-200">
+                    <!-- Controlli Flottanti sulla Mappa -->
+                    <div class="absolute top-2.5 right-2.5 z-20 flex items-center gap-1.5 pointer-events-auto">
+                        <button type="button" id="btn-recenter-map"
+                            class="px-3 py-1.5 rounded-xl bg-white/95 hover:bg-posteYellow active:scale-95 text-posteBlue border border-slate-200/90 shadow-md text-xs font-extrabold flex items-center gap-1.5 backdrop-blur-md transition-all duration-200"
+                            title="Centra mappa sull'intero giro">
+                            <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.4">
+                                <path stroke-linecap="round" stroke-linejoin="round" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+                            </svg>
+                            <span>Centra</span>
+                        </button>
                     </div>
-                    <button type="button" id="btn-recenter-map"
-                        class="text-xs font-bold text-posteBlue hover:underline">
-                        Centra Mappa
-                    </button>
+
+                    <div class="absolute bottom-2.5 left-2.5 z-20 pointer-events-none">
+                        <span id="badge-routing-mode" class="text-[10px] font-extrabold px-2.5 py-1 rounded-xl bg-green-100/95 text-green-900 border border-green-300/80 shadow-sm backdrop-blur-md">Stradale Reale</span>
+                    </div>
+
+                    <div id="route-map" class="w-full h-72 relative"></div>
                 </div>
-                <div id="route-map" class="w-full h-72 rounded-xl border border-slate-200 overflow-hidden bg-slate-200 relative"></div>
             </section>
 
             <!-- Lista Tappe Interattiva (Checklist) -->
-            <section class="bg-white rounded-2xl shadow-sm border border-slate-200/80 overflow-hidden">
+            <section class="bg-white rounded-3xl shadow-[0_4px_20px_-4px_rgba(0,57,166,0.08)] border border-blue-950/[0.06] overflow-hidden">
                 <div class="p-4 border-b border-slate-100 flex items-center justify-between">
                     <div>
                         <h2 class="text-sm font-extrabold text-slate-800 uppercase tracking-wide">Sequenza Consegne</h2>
                         <p class="text-[11px] text-slate-500">Spunta i pacchi o riordina con frecce / trascina</p>
                     </div>
                     <button type="button" id="btn-edit-addresses-from-route"
-                        class="px-2.5 py-1.5 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-xs transition-colors">
+                        class="px-3 py-1.5 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-xs transition-all duration-200 active:scale-95">
                         Modifica Lista
                     </button>
                 </div>
@@ -738,31 +780,47 @@
                 const view = document.getElementById(`view-step-${num}`);
                 if (view) {
                     if (num === stepNumber) {
-                        view.classList.remove("hidden");
+                        view.classList.remove("hidden", "step-view-animate");
+                        void view.offsetWidth;
+                        view.classList.add("step-view-animate");
                     } else {
                         view.classList.add("hidden");
+                        view.classList.remove("step-view-animate");
                     }
                 }
             });
 
-            // Aggiorna stato tab superiore
+            // Aggiorna stato Stepper a Pillole
             const activeTabStep = stepNumber === 3 ? 2 : stepNumber;
             document.querySelectorAll(".step-tab").forEach(tab => {
                 const tabStep = parseInt(tab.dataset.navStep, 10);
-                const badge = tab.querySelector("span:first-child");
+                const badge = tab.querySelector(".step-badge-num");
+                const displayNum = tabStep === 4 ? 3 : tabStep;
+                const isCompletedStep = tabStep < activeTabStep;
+
                 if (tabStep === activeTabStep) {
-                    tab.classList.add("text-posteBlue", "bg-blue-50");
-                    tab.classList.remove("text-slate-500");
+                    tab.classList.add("bg-posteBlue", "text-white", "shadow-sm");
+                    tab.classList.remove("text-slate-600", "text-posteBlue", "hover:text-slate-800");
                     if (badge) {
-                        badge.classList.add("bg-posteBlue", "text-white");
-                        badge.classList.remove("bg-slate-200", "text-slate-600");
+                        badge.textContent = String(displayNum);
+                        badge.classList.add("bg-posteYellow", "text-posteBlue", "font-black");
+                        badge.classList.remove("bg-white", "text-slate-600", "bg-green-600", "text-white");
+                    }
+                } else if (isCompletedStep) {
+                    tab.classList.remove("bg-posteBlue", "text-white", "shadow-sm", "text-slate-600");
+                    tab.classList.add("text-posteBlue", "hover:text-posteBlueDark");
+                    if (badge) {
+                        badge.textContent = "✓";
+                        badge.classList.add("bg-green-600", "text-white", "font-black");
+                        badge.classList.remove("bg-white", "text-slate-600", "bg-posteYellow", "text-posteBlue");
                     }
                 } else {
-                    tab.classList.remove("text-posteBlue", "bg-blue-50");
-                    tab.classList.add("text-slate-500");
+                    tab.classList.remove("bg-posteBlue", "text-white", "shadow-sm", "text-posteBlue");
+                    tab.classList.add("text-slate-600", "hover:text-slate-800");
                     if (badge) {
-                        badge.classList.remove("bg-posteBlue", "text-white");
-                        badge.classList.add("bg-slate-200", "text-slate-600");
+                        badge.textContent = String(displayNum);
+                        badge.classList.add("bg-white", "text-slate-600");
+                        badge.classList.remove("bg-posteYellow", "text-posteBlue", "bg-green-600", "text-white", "font-black");
                     }
                 }
             });
@@ -1063,7 +1121,6 @@
             let explicitCity = "";
 
             if (parts.length >= 2) {
-                // Gestisce anche il formato "Via Cornelia, 164, Roma"
                 if (/^(?:n\.?|nr\.?|civ\.?)?\s*\d+[a-zA-Z]?(?:[\/\-]\d*[a-zA-Z]?)?$/i.test(parts[1])) {
                     streetAndCivic = `${streetAndCivic} ${parts[1].replace(/^(?:n\.?|nr\.?|civ\.?)\s*/i, "")}`;
                     explicitCity = parts.slice(2).join(", ");
@@ -1109,8 +1166,6 @@
 
         /**
          * Suggerimenti Indirizzi in Tempo Reale per l'Inserimento Manuale
-         * - Riconosce e valorizza i numeri civici esatti (Nominatim + Photon)
-         * - Mostra strade omonime in tutti i comuni limitrofi senza forzare un solo comune
          */
         function initManualAddressAutocomplete(inputEl, dropdownEl, onQuickAddAddress) {
             if (!inputEl || !dropdownEl) return () => {};
@@ -1257,8 +1312,6 @@
             };
 
             const persistSuggestionInCache = (item) => {
-                // Salva nella cache solo se il civico è esatto o se l'indirizzo non ha civico,
-                // evitando di sovrascrivere un civico con il centro strada
                 if (item && Number.isFinite(item.lat) && Number.isFinite(item.lon) && item.fullAddress && (!item.hasHouseNumber || item.exactCivic)) {
                     const cache = loadGeoCache();
                     cache[item.fullAddress.trim().toLowerCase()] = {
@@ -1277,7 +1330,6 @@
                 hideDropdown();
                 inputEl.focus();
 
-                // Se manca il civico e c'è ", Comune", posiziona il cursore prima della virgola per scriverlo al volo
                 const commaIdx = item.fullAddress.indexOf(",");
                 if (!item.hasHouseNumber && commaIdx > 0) {
                     inputEl.setSelectionRange(commaIdx, commaIdx);
@@ -1390,7 +1442,6 @@
                 activeAbortController = new AbortController();
                 const signal = activeAbortController.signal;
 
-                // Cerca SENZA forzare un solo comune, così emergono tutte le strade omonime nei vari comuni
                 const freeQuery = parsedQuery.explicitCity
                     ? `${parsedQuery.street}${parsedQuery.houseNumber ? " " + parsedQuery.houseNumber : ""}, ${parsedQuery.explicitCity}`
                     : `${parsedQuery.street}${parsedQuery.houseNumber ? " " + parsedQuery.houseNumber : ""}`;
@@ -1423,7 +1474,6 @@
                     });
                 }
 
-                // Deduplica per (indirizzo completo + comune) mantenendo la versione con civico esatto se disponibile
                 const byKey = new Map();
                 candidates.forEach((cand) => {
                     const key = cand.fullAddress.toLowerCase();
@@ -1437,7 +1487,6 @@
 
                 const deduped = Array.from(byKey.values());
 
-                // Ordina: 1) corrispondenza comune esplicito, 2) civico esatto, 3) vicinanza alla sede di partenza
                 deduped.sort((a, b) => {
                     if (parsedQuery.explicitCity) {
                         const targetCity = parsedQuery.explicitCity.toLowerCase();
@@ -1510,7 +1559,6 @@
                 onReordered();
             };
 
-            // 1. Desktop / Mouse HTML5 Drag & Drop
             listContainer.querySelectorAll("[data-item-idx]").forEach(row => {
                 const handle = row.querySelector(".drag-handle");
                 if (handle) {
@@ -1547,7 +1595,6 @@
                     syncOrderFromDOM();
                 });
 
-                // 2. Touch Drag & Drop su Smartphone tramite maniglia
                 if (handle) {
                     handle.addEventListener("touchstart", (e) => {
                         if (e.touches.length !== 1) return;
@@ -1589,7 +1636,6 @@
 
         /**
          * Renderizza una casella di testo dedicata per ogni indirizzo inserito manualmente nello Step 1
-         * (con Stella di Priorità ★, senza riordino manuale)
          */
         function renderManualAddressBoxes() {
             const listContainer = document.getElementById("manual-addresses-list");
@@ -1607,7 +1653,7 @@
                     isPriority ? "bg-amber-50/70 border-amber-300" : "bg-slate-50 border-slate-200"
                 }`;
                 row.innerHTML = `
-                    <span class="w-6 h-6 rounded-full ${isPriority ? "bg-amber-400 text-slate-950" : "bg-blue-100 text-posteBlue"} text-xs font-extrabold flex items-center justify-center flex-shrink-0">
+                    <span class="w-6 h-6 rounded-full tabular-nums ${isPriority ? "bg-amber-400 text-slate-950" : "bg-blue-100 text-posteBlue"} text-xs font-extrabold flex items-center justify-center flex-shrink-0">
                         ${index + 1}
                     </span>
                     <button type="button"
@@ -1652,6 +1698,7 @@
 
                 if (romaBtn) {
                     input.addEventListener("focus", () => {
+                        romaBtn.textContent = `+ , ${getDefaultMunicipality()}`;
                         romaBtn.classList.remove("hidden");
                     });
 
@@ -1759,7 +1806,7 @@
                         clean = clean.slice(match.index).trim();
                     }
 
-                    let citySuffix = "Roma";
+                    let citySuffix = getDefaultMunicipality();
                     if (i + 1 < rawLines.length) {
                         const nextClean = rawLines[i + 1].replace(/^[^a-zA-Z]+/, "").trim();
                         const cityMatch = nextClean.match(cityOnlyRegex);
@@ -1858,15 +1905,16 @@
             });
 
             document.getElementById("btn-append-roma").addEventListener("click", () => {
+                const defaultCity = getDefaultMunicipality();
                 appState.rawAddresses = appState.rawAddresses.map(raw => {
                     const item = normalizeAddressItem(raw);
                     const trimmed = item.address.trim();
                     if (!trimmed) return { address: "", priority: item.priority };
                     if (/,\s*[a-zA-Zàèéìòù\s]+$/.test(trimmed)) return { address: trimmed, priority: item.priority };
-                    return { address: `${trimmed}, Roma`, priority: item.priority };
+                    return { address: `${trimmed}, ${defaultCity}`, priority: item.priority };
                 });
                 renderStep2AddressInputs();
-                showToast('Aggiunto ", Roma" agli indirizzi senza comune', "info");
+                showToast(`Aggiunto ", ${defaultCity}" agli indirizzi senza comune`, "info");
             });
 
             document.getElementById("btn-calculate-route").addEventListener("click", () => {
@@ -1914,7 +1962,7 @@
                     isPriority ? "bg-amber-50/70 border-amber-300" : "bg-slate-50 border-slate-200"
                 }`;
                 row.innerHTML = `
-                    <span class="w-6 h-6 rounded-full ${isPriority ? "bg-amber-400 text-slate-950" : "bg-blue-100 text-posteBlue"} text-xs font-extrabold flex items-center justify-center flex-shrink-0">
+                    <span class="w-6 h-6 rounded-full tabular-nums ${isPriority ? "bg-amber-400 text-slate-950" : "bg-blue-100 text-posteBlue"} text-xs font-extrabold flex items-center justify-center flex-shrink-0">
                         ${index + 1}
                     </span>
                     <button type="button"
@@ -1957,6 +2005,7 @@
                 });
 
                 input.addEventListener("focus", () => {
+                    romaBtn.textContent = `+ , ${getDefaultMunicipality()}`;
                     romaBtn?.classList.remove("hidden");
                 });
 
@@ -2144,11 +2193,9 @@
             let bestCandidate = null;
 
             try {
-                // 1. Ricerca rapida su Photon (se trova il civico esatto nel comune giusto, risponde in ~150 ms)
                 const photonMatches = await queryPhotonCandidates(fullQuery, parsed, effectiveBias);
                 bestCandidate = pickBestGeoCandidate(photonMatches);
 
-                // 2. Se c'è un numero civico e Photon non ha restituito il civico esatto, interroga Nominatim (strutturato + libero)
                 if (parsed.houseNumber && (!bestCandidate || !bestCandidate.exactCivic || !bestCandidate.cityMatches)) {
                     const nomStructured = await queryNominatimCandidates(fullQuery, parsed, effectiveBias, true);
                     const bestStructured = pickBestGeoCandidate(nomStructured);
@@ -2168,7 +2215,6 @@
                     bestCandidate = pickBestGeoCandidate(nomMatches);
                 }
 
-                // 3. Se l'utente non aveva scritto il comune e nel comune di partenza non esiste, cerca nei comuni limitrofi
                 if ((!bestCandidate || !bestCandidate.cityMatches) && !parsed.explicitCity) {
                     const noCityParsed = { ...parsed, city: "" };
                     const noCityQuery = `${parsed.street}${parsed.houseNumber ? " " + parsed.houseNumber : ""}`;
@@ -2179,7 +2225,6 @@
                     }
                 }
 
-                // 4. Ultimo fallback: strada senza civico nello stesso comune
                 if (!bestCandidate && parsed.houseNumber) {
                     const streetOnlyParsed = { ...parsed, houseNumber: "" };
                     const streetOnlyQuery = `${parsed.street}${parsed.city ? ", " + parsed.city : ""}`;
@@ -2280,7 +2325,6 @@
 
         /**
          * Ottimizzatore TSP Asimmetrico (Nearest Neighbor + 2-Opt Asimmetrico + Or-Opt)
-         * Le tappe con stella di priorità (priority: true) vengono consegnate per prime in ordine ottimale.
          */
         function solveTSPWithCostMatrix(allNodes, costMatrix) {
             const n = allNodes.length;
@@ -2653,7 +2697,6 @@
             document.getElementById("stat-distance").textContent = formatDistance(data.totalDistanceMeters);
             updateChecklistProgressUI();
 
-            // Sezione Anomalie (> 25 km)
             const anomaliesSection = document.getElementById("anomalies-section");
             const anomaliesList = document.getElementById("anomalies-list");
             anomaliesList.innerHTML = "";
@@ -2686,7 +2729,6 @@
                 anomaliesSection.classList.add("hidden");
             }
 
-            // Sezione Indirizzi non trovati
             const notFoundSection = document.getElementById("notfound-section");
             const notFoundList = document.getElementById("notfound-list");
             if (data.notFound && data.notFound.length > 0) {
@@ -2696,7 +2738,6 @@
                 notFoundSection.classList.add("hidden");
             }
 
-            // Bottoni Fasi Google Maps
             const phases = buildGoogleMapsPhases(data);
             const phasesContainer = document.getElementById("gmaps-phases-container");
             document.getElementById("badge-phases-count").textContent = phases.length === 1 ? "1 Fase" : `${phases.length} Fasi`;
@@ -2790,11 +2831,11 @@
             container.innerHTML = "";
 
             const startBanner = document.createElement("div");
-            startBanner.className = "p-3.5 bg-blue-50/50 flex items-center gap-3";
+            startBanner.className = "p-3.5 bg-blue-50/60 flex items-center gap-3";
             startBanner.innerHTML = `
-                <div class="w-8 h-8 rounded-full bg-posteBlue text-posteYellow font-extrabold text-xs flex items-center justify-center flex-shrink-0">P</div>
+                <div class="w-8 h-8 rounded-full bg-posteBlue text-posteYellow font-extrabold text-xs flex items-center justify-center flex-shrink-0 shadow-2xs">P</div>
                 <div class="flex-1 min-w-0">
-                    <span class="text-[10px] font-extrabold uppercase text-posteBlue">Partenza</span>
+                    <span class="text-[10px] font-extrabold uppercase tracking-wider text-posteBlue">Partenza</span>
                     <p class="text-xs font-bold text-slate-800 truncate">${escapeHtml(data.start.address)}</p>
                 </div>
             `;
@@ -2805,16 +2846,24 @@
             container.appendChild(sortableStopsWrapper);
 
             const totalStops = data.stops.length;
+            const initialNextIndex = data.stops.findIndex(s => !s.completed);
 
             data.stops.forEach((stop, index) => {
                 const phaseNum = stopToPhaseMap[stop.order] || 1;
                 const singleNavUrl = `https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(stop.address)}&travelmode=driving`;
                 const isFirst = index === 0;
                 const isLast = index === totalStops - 1;
+                const isCurrentNext = index === initialNextIndex;
 
                 const row = document.createElement("div");
                 row.dataset.itemIdx = String(index);
-                row.className = `p-3 flex items-center gap-2 transition-colors ${stop.completed ? "bg-slate-50/90" : "bg-white hover:bg-slate-50/60"}`;
+                row.className = `p-3 flex items-center gap-2 transition-all duration-200 ${
+                    stop.completed
+                        ? "bg-slate-50/90"
+                        : (isCurrentNext
+                            ? "bg-gradient-to-r from-blue-50/95 via-blue-50/55 to-amber-50/45 border-l-4 border-l-posteBlue"
+                            : "bg-white hover:bg-slate-50/60")
+                }`;
                 row.innerHTML = `
                     <button type="button"
                         class="drag-handle touch-none cursor-grab active:cursor-grabbing p-1.5 text-slate-400 hover:text-posteBlue rounded-lg flex-shrink-0"
@@ -2826,18 +2875,21 @@
 
                     <label class="flex items-center gap-2.5 flex-1 min-w-0 cursor-pointer select-none py-0.5">
                         <input type="checkbox" class="delivery-checkbox hidden" data-stop-index="${index}" ${stop.completed ? "checked" : ""}>
-                        <div class="custom-check-box w-7 h-7 rounded-xl border-2 ${stop.completed ? "bg-green-600 border-green-600" : "border-slate-300 bg-white"} flex items-center justify-center flex-shrink-0 transition-colors">
+                        <div class="custom-check-box w-7 h-7 rounded-xl border-2 ${stop.completed ? "bg-green-600 border-green-600" : (isCurrentNext ? "border-posteBlue bg-white shadow-2xs" : "border-slate-300 bg-white")} flex items-center justify-center flex-shrink-0 transition-all duration-200">
                             <svg class="check-icon ${stop.completed ? "block" : "hidden"} w-4 h-4 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M5 13l4 4L19 7"></path>
                             </svg>
                         </div>
-                        <div class="stop-badge w-6 h-6 rounded-full ${stop.completed ? "bg-slate-200 text-slate-500" : (stop.priority ? "bg-amber-400 text-slate-950" : "bg-posteBlue text-white")} font-extrabold text-xs flex items-center justify-center flex-shrink-0">
+                        <div class="stop-badge w-6 h-6 rounded-full tabular-nums ${stop.completed ? "bg-slate-200 text-slate-500" : (stop.priority ? "bg-amber-400 text-slate-950" : "bg-posteBlue text-white")} ${isCurrentNext ? "ring-2 ring-posteYellow ring-offset-1" : ""} font-extrabold text-xs flex items-center justify-center flex-shrink-0 transition-all duration-200">
                             ${stop.order}
                         </div>
                         <div class="flex-1 min-w-0">
-                            <p class="stop-title text-sm font-bold leading-snug break-words ${stop.completed ? "line-through text-slate-400" : "text-slate-800"}">${escapeHtml(stop.address)}</p>
+                            <p class="stop-title text-sm font-bold leading-snug break-words transition-colors ${stop.completed ? "line-through text-slate-400" : (isCurrentNext ? "text-posteBlueDark font-extrabold" : "text-slate-800")}">${escapeHtml(stop.address)}</p>
                             <div class="flex items-center gap-1.5 mt-0.5 flex-wrap">
-                                <span class="text-[10px] font-bold px-1.5 py-0.5 rounded bg-slate-100 text-slate-500">Fase ${phaseNum}</span>
+                                <span class="next-stop-pill ${isCurrentNext ? "inline-flex" : "hidden"} items-center gap-1 text-[10px] font-black uppercase tracking-wide px-2 py-0.5 rounded-full bg-posteBlue text-posteYellow shadow-2xs">
+                                    Prossima Tappa
+                                </span>
+                                <span class="text-[10px] font-bold px-1.5 py-0.5 rounded bg-slate-100 text-slate-600">Fase ${phaseNum}</span>
                                 ${stop.priority ? `<span class="text-[10px] font-extrabold px-1.5 py-0.5 rounded bg-amber-100 text-amber-800">★ Priorità</span>` : ""}
                             </div>
                         </div>
@@ -2867,7 +2919,7 @@
                     </div>
 
                     <a href="${singleNavUrl}" target="_blank" rel="noopener noreferrer"
-                        class="p-2.5 rounded-xl bg-slate-100 hover:bg-posteYellow text-posteBlue transition-colors flex-shrink-0"
+                        class="p-2.5 rounded-xl ${isCurrentNext ? "bg-posteYellow text-posteBlue shadow-xs" : "bg-slate-100 hover:bg-posteYellow text-posteBlue"} transition-all duration-200 flex-shrink-0"
                         title="Naviga solo a questo indirizzo">
                         <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.2">
                             <path stroke-linecap="round" stroke-linejoin="round" d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z" />
@@ -2883,7 +2935,7 @@
             endBanner.innerHTML = `
                 <div class="w-8 h-8 rounded-full bg-slate-800 text-white font-extrabold text-xs flex items-center justify-center flex-shrink-0">A</div>
                 <div class="flex-1 min-w-0">
-                    <span class="text-[10px] font-extrabold uppercase text-slate-500">Rientro</span>
+                    <span class="text-[10px] font-extrabold uppercase tracking-wider text-slate-500">Rientro</span>
                     <p class="text-xs font-bold text-slate-800 truncate">${escapeHtml(data.end.address)}</p>
                 </div>
             `;
@@ -2915,46 +2967,101 @@
                 () => applyManualRouteReorder([...stopsSnapshot])
             );
 
+            const refreshAllChecklistRows = () => {
+                const currentNextIdx = appState.activeRoute.stops.findIndex(s => !s.completed);
+                sortableStopsWrapper.querySelectorAll("div[data-item-idx]").forEach(rowEl => {
+                    const idx = parseInt(rowEl.dataset.itemIdx, 10);
+                    const stop = appState.activeRoute.stops[idx];
+                    const isChecked = Boolean(stop.completed);
+                    const isNext = !isChecked && idx === currentNextIdx;
+
+                    const titleEl = rowEl.querySelector(".stop-title");
+                    const boxEl = rowEl.querySelector(".custom-check-box");
+                    const iconEl = rowEl.querySelector(".check-icon");
+                    const badgeEl = rowEl.querySelector(".stop-badge");
+                    const nextPillEl = rowEl.querySelector(".next-stop-pill");
+                    const navLinkEl = rowEl.querySelector("a[title]");
+
+                    rowEl.classList.remove(
+                        "bg-slate-50/90",
+                        "bg-white",
+                        "hover:bg-slate-50/60",
+                        "bg-gradient-to-r",
+                        "from-blue-50/95",
+                        "via-blue-50/55",
+                        "to-amber-50/45",
+                        "border-l-4",
+                        "border-l-posteBlue"
+                    );
+
+                    if (isChecked) {
+                        rowEl.classList.add("bg-slate-50/90");
+                        titleEl.classList.add("line-through", "text-slate-400");
+                        titleEl.classList.remove("text-slate-800", "text-posteBlueDark", "font-extrabold");
+                        boxEl.classList.add("bg-green-600", "border-green-600");
+                        boxEl.classList.remove("border-slate-300", "border-posteBlue", "bg-white", "shadow-2xs");
+                        iconEl.classList.remove("hidden");
+                        badgeEl.classList.add("bg-slate-200", "text-slate-500");
+                        badgeEl.classList.remove("bg-posteBlue", "text-white", "bg-amber-400", "text-slate-950", "ring-2", "ring-posteYellow", "ring-offset-1");
+                        nextPillEl?.classList.add("hidden");
+                        nextPillEl?.classList.remove("inline-flex");
+                        if (navLinkEl) {
+                            navLinkEl.classList.remove("bg-posteYellow", "shadow-xs");
+                            navLinkEl.classList.add("bg-slate-100", "hover:bg-posteYellow");
+                        }
+                    } else {
+                        titleEl.classList.remove("line-through", "text-slate-400");
+                        boxEl.classList.remove("bg-green-600", "border-green-600");
+                        boxEl.classList.add("bg-white");
+                        iconEl.classList.add("hidden");
+                        badgeEl.classList.remove("bg-slate-200", "text-slate-500");
+
+                        if (stop.priority) {
+                            badgeEl.classList.add("bg-amber-400", "text-slate-950");
+                            badgeEl.classList.remove("bg-posteBlue", "text-white");
+                        } else {
+                            badgeEl.classList.add("bg-posteBlue", "text-white");
+                            badgeEl.classList.remove("bg-amber-400", "text-slate-950");
+                        }
+
+                        if (isNext) {
+                            rowEl.classList.add("bg-gradient-to-r", "from-blue-50/95", "via-blue-50/55", "to-amber-50/45", "border-l-4", "border-l-posteBlue");
+                            titleEl.classList.add("text-posteBlueDark", "font-extrabold");
+                            titleEl.classList.remove("text-slate-800");
+                            boxEl.classList.add("border-posteBlue", "shadow-2xs");
+                            boxEl.classList.remove("border-slate-300");
+                            badgeEl.classList.add("ring-2", "ring-posteYellow", "ring-offset-1");
+                            nextPillEl?.classList.remove("hidden");
+                            nextPillEl?.classList.add("inline-flex");
+                            if (navLinkEl) {
+                                navLinkEl.classList.add("bg-posteYellow", "shadow-xs");
+                                navLinkEl.classList.remove("bg-slate-100");
+                            }
+                        } else {
+                            rowEl.classList.add("bg-white", "hover:bg-slate-50/60");
+                            titleEl.classList.add("text-slate-800");
+                            titleEl.classList.remove("text-posteBlueDark", "font-extrabold");
+                            boxEl.classList.add("border-slate-300");
+                            boxEl.classList.remove("border-posteBlue", "shadow-2xs");
+                            badgeEl.classList.remove("ring-2", "ring-posteYellow", "ring-offset-1");
+                            nextPillEl?.classList.add("hidden");
+                            nextPillEl?.classList.remove("inline-flex");
+                            if (navLinkEl) {
+                                navLinkEl.classList.remove("bg-posteYellow", "shadow-xs");
+                                navLinkEl.classList.add("bg-slate-100", "hover:bg-posteYellow");
+                            }
+                        }
+                    }
+                });
+            };
+
             sortableStopsWrapper.querySelectorAll(".delivery-checkbox").forEach(cb => {
                 cb.addEventListener("change", (e) => {
                     const idx = parseInt(e.target.dataset.stopIndex, 10);
-                    const isChecked = e.target.checked;
-                    appState.activeRoute.stops[idx].completed = isChecked;
+                    appState.activeRoute.stops[idx].completed = e.target.checked;
                     saveActiveShiftToStorage();
                     updateChecklistProgressUI();
-
-                    const row = e.target.closest("div[data-item-idx]");
-                    const titleEl = row.querySelector(".stop-title");
-                    const boxEl = row.querySelector(".custom-check-box");
-                    const iconEl = row.querySelector(".check-icon");
-                    const badgeEl = row.querySelector(".stop-badge");
-
-                    if (isChecked) {
-                        row.classList.add("bg-slate-50/90");
-                        row.classList.remove("bg-white");
-                        titleEl.classList.add("line-through", "text-slate-400");
-                        titleEl.classList.remove("text-slate-800");
-                        boxEl.classList.add("bg-green-600", "border-green-600");
-                        boxEl.classList.remove("border-slate-300", "bg-white");
-                        iconEl.classList.remove("hidden");
-                        badgeEl.classList.add("bg-slate-200", "text-slate-500");
-                        badgeEl.classList.remove("bg-posteBlue", "text-white", "bg-amber-400", "text-slate-950");
-                    } else {
-                        row.classList.remove("bg-slate-50/90");
-                        row.classList.add("bg-white");
-                        titleEl.classList.remove("line-through", "text-slate-400");
-                        titleEl.classList.add("text-slate-800");
-                        boxEl.classList.remove("bg-green-600", "border-green-600");
-                        boxEl.classList.add("border-slate-300", "bg-white");
-                        iconEl.classList.add("hidden");
-                        badgeEl.classList.remove("bg-slate-200", "text-slate-500");
-                        if (appState.activeRoute.stops[idx].priority) {
-                            badgeEl.classList.add("bg-amber-400", "text-slate-950");
-                        } else {
-                            badgeEl.classList.add("bg-posteBlue", "text-white");
-                        }
-                    }
-
+                    refreshAllChecklistRows();
                     renderInteractiveMap(appState.activeRoute, false);
                 });
             });
@@ -3024,10 +3131,10 @@
             if (routingBadge) {
                 if (data.isRoadGeometry) {
                     routingBadge.textContent = "Stradale Reale";
-                    routingBadge.className = "text-[10px] font-extrabold px-2 py-0.5 rounded-full bg-green-100 text-green-800";
+                    routingBadge.className = "text-[10px] font-extrabold px-2.5 py-1 rounded-xl bg-green-100/95 text-green-900 border border-green-300/80 shadow-sm backdrop-blur-md";
                 } else {
                     routingBadge.textContent = "Stima Offline";
-                    routingBadge.className = "text-[10px] font-extrabold px-2 py-0.5 rounded-full bg-amber-100 text-amber-800";
+                    routingBadge.className = "text-[10px] font-extrabold px-2.5 py-1 rounded-xl bg-amber-100/95 text-amber-900 border border-amber-300/80 shadow-sm backdrop-blur-md";
                 }
             }
 
@@ -3065,15 +3172,19 @@
                 .addTo(appState.mapLayerGroup);
             boundsPoints.push([data.start.lat, data.start.lon]);
 
+            const nextUncompletedStop = data.stops.find(s => !s.completed);
+            const nextUncompletedOrder = nextUncompletedStop ? nextUncompletedStop.order : null;
+
             data.stops.forEach(stop => {
+                const isNextOnMap = !stop.completed && stop.order === nextUncompletedOrder;
                 const stopIcon = L.divIcon({
                     className: "custom-div-icon",
-                    html: `<div class="marker-pin marker-stop ${stop.priority ? "priority" : ""} ${stop.completed ? "completed" : ""}">${stop.order}</div>`,
+                    html: `<div class="marker-pin marker-stop ${stop.priority ? "priority" : ""} ${stop.completed ? "completed" : ""} ${isNextOnMap ? "current-next" : ""}">${stop.order}</div>`,
                     iconSize: [32, 32],
                     iconAnchor: [16, 16]
                 });
-                L.marker([stop.lat, stop.lon], { icon: stopIcon, zIndexOffset: 400 - stop.order })
-                    .bindPopup(`<strong>Tappa #${stop.order}${stop.priority ? " ★ Priorità" : ""}:</strong><br>${escapeHtml(stop.address)}`)
+                L.marker([stop.lat, stop.lon], { icon: stopIcon, zIndexOffset: isNextOnMap ? 480 : (400 - stop.order) })
+                    .bindPopup(`<strong>${isNextOnMap ? "👉 PROSSIMA TAPPA #" : "Tappa #"}${stop.order}${stop.priority ? " ★ Priorità" : ""}:</strong><br>${escapeHtml(stop.address)}`)
                     .addTo(appState.mapLayerGroup);
                 boundsPoints.push([stop.lat, stop.lon]);
             });

@@ -236,19 +236,35 @@
                     <p class="text-xs text-slate-500 mt-0.5">Scatta una foto alla distinta o carica uno screenshot dal telefono.</p>
                 </div>
 
-                <!-- Area Selezione Immagine -->
-                <label id="upload-dropzone" for="image-file-input"
-                    class="block border-2 border-dashed border-posteBlue/40 hover:border-posteBlue bg-blue-50/40 hover:bg-blue-50 rounded-2xl p-6 text-center cursor-pointer transition-all">
-                    <div class="w-12 h-12 rounded-2xl bg-posteYellow text-posteBlue mx-auto flex items-center justify-center shadow-sm mb-3">
-                        <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.2">
-                            <path stroke-linecap="round" stroke-linejoin="round" d="M3 9a2 2 0 012-2h.93a2 2 0 001.664-.89l.812-1.22A2 2 0 0110.07 4h3.86a2 2 0 011.664.89l.812 1.22A2 2 0 0018.07 7H19a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V9z" />
-                            <path stroke-linecap="round" stroke-linejoin="round" d="M15 13a3 3 0 11-6 0 3 3 0 016 0z" />
-                        </svg>
+                <!-- Area Scatto Fotocamera o Selezione Immagine -->
+                <div id="upload-dropzone"
+                    class="border-2 border-dashed border-posteBlue/40 bg-blue-50/40 rounded-2xl p-4 text-center space-y-3 transition-all">
+                    <div class="grid grid-cols-2 gap-2.5">
+                        <!-- Bottone Fotocamera Diretta Smartphone -->
+                        <label for="camera-file-input"
+                            class="flex flex-col items-center justify-center p-4 bg-posteBlue hover:bg-posteBlueDark text-posteYellow rounded-xl shadow-sm cursor-pointer transition-transform active:scale-[0.98]">
+                            <svg xmlns="http://www.w3.org/2000/svg" class="h-7 w-7 mb-1.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.2">
+                                <path stroke-linecap="round" stroke-linejoin="round" d="M3 9a2 2 0 012-2h.93a2 2 0 001.664-.89l.812-1.22A2 2 0 0110.07 4h3.86a2 2 0 011.664.89l.812 1.22A2 2 0 0018.07 7H19a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V9z" />
+                                <path stroke-linecap="round" stroke-linejoin="round" d="M15 13a3 3 0 11-6 0 3 3 0 016 0z" />
+                            </svg>
+                            <span class="text-xs font-extrabold">Scatta Foto</span>
+                            <span class="text-[10px] text-blue-200 mt-0.5">Apri Fotocamera</span>
+                            <input type="file" id="camera-file-input" accept="image/*" capture="environment" class="hidden">
+                        </label>
+
+                        <!-- Bottone Galleria / File -->
+                        <label for="image-file-input"
+                            class="flex flex-col items-center justify-center p-4 bg-white hover:bg-blue-50 text-posteBlue border border-posteBlue/30 rounded-xl shadow-sm cursor-pointer transition-transform active:scale-[0.98]">
+                            <svg xmlns="http://www.w3.org/2000/svg" class="h-7 w-7 mb-1.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.2">
+                                <path stroke-linecap="round" stroke-linejoin="round" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
+                            </svg>
+                            <span class="text-xs font-extrabold">Scegli Immagine</span>
+                            <span class="text-[10px] text-slate-500 mt-0.5">Galleria / Screenshot</span>
+                            <input type="file" id="image-file-input" accept="image/*" class="hidden">
+                        </label>
                     </div>
-                    <p class="text-sm font-extrabold text-posteBlue">Tocca per Scattare Foto o Scegliere Immagine</p>
-                    <p class="text-xs text-slate-500 mt-1">Supporta JPG, PNG, Screenshot (Elaborazione 100% locale)</p>
-                    <input type="file" id="image-file-input" accept="image/*" class="hidden">
-                </label>
+                    <p class="text-[11px] text-slate-500">Supporta Fotocamera, JPG, PNG, Screenshot (Elaborazione 100% locale)</p>
+                </div>
 
                 <!-- Anteprima Immagine Caricata -->
                 <div id="image-preview-wrapper" class="hidden space-y-3">
@@ -295,9 +311,20 @@
                     </button>
 
                     <div id="manual-input-panel" class="hidden space-y-2.5 pt-1">
-                        <textarea id="textarea-manual-addresses" rows="5"
-                            class="w-full p-3 bg-slate-50 border border-slate-300 rounded-xl text-sm font-medium text-slate-800 focus:outline-none focus:ring-2 focus:ring-posteBlue"
-                            placeholder="Inserisci un indirizzo per riga, es:&#10;Via Gregorio XI 4, Roma&#10;Via Cornelia 164, Roma"></textarea>
+                        <div class="flex items-center gap-2">
+                            <input type="text" id="input-manual-single-address" enterkeyhint="enter"
+                                class="flex-1 px-3.5 py-2.5 bg-slate-50 border border-slate-300 rounded-xl text-sm font-semibold text-slate-800 focus:outline-none focus:ring-2 focus:ring-posteBlue"
+                                placeholder="Scrivi un indirizzo e premi Invio...">
+                            <button type="button" id="btn-add-manual-single"
+                                title="Aggiungi indirizzo"
+                                class="px-3.5 py-2.5 bg-posteBlue hover:bg-posteBlueDark text-posteYellow font-black text-sm rounded-xl shadow-sm transition-colors flex-shrink-0">
+                                +
+                            </button>
+                        </div>
+
+                        <!-- Caselle di testo dedicate create per ogni indirizzo inserito -->
+                        <div id="manual-addresses-list" class="space-y-2 max-h-60 overflow-y-auto pr-0.5"></div>
+
                         <button type="button" id="btn-import-manual"
                             class="w-full py-3 px-4 bg-slate-800 hover:bg-slate-900 text-white font-extrabold text-xs rounded-xl transition-colors">
                             Usa Questi Indirizzi
@@ -553,6 +580,7 @@
         const appState = {
             currentStep: 1,
             imageDataUrl: null,
+            manualAddresses: [],
             rawAddresses: [],
             forcedIncludeSet: new Set(),
             activeRoute: null,
@@ -708,14 +736,13 @@
          */
         function initImageUpload() {
             const fileInput = document.getElementById("image-file-input");
+            const cameraInput = document.getElementById("camera-file-input");
             const dropzone = document.getElementById("upload-dropzone");
             const previewWrapper = document.getElementById("image-preview-wrapper");
             const previewEl = document.getElementById("image-preview-el");
 
-            fileInput.addEventListener("change", (e) => {
-                const file = e.target.files?.[0];
+            const handleSelectedImageFile = (file) => {
                 if (!file) return;
-
                 const reader = new FileReader();
                 reader.onload = (ev) => {
                     appState.imageDataUrl = ev.target.result;
@@ -724,10 +751,19 @@
                     previewWrapper.classList.remove("hidden");
                 };
                 reader.readAsDataURL(file);
+            };
+
+            fileInput.addEventListener("change", (e) => {
+                handleSelectedImageFile(e.target.files?.[0]);
+            });
+
+            cameraInput.addEventListener("change", (e) => {
+                handleSelectedImageFile(e.target.files?.[0]);
             });
 
             document.getElementById("btn-remove-image").addEventListener("click", () => {
                 fileInput.value = "";
+                cameraInput.value = "";
                 appState.imageDataUrl = null;
                 previewEl.src = "";
                 previewWrapper.classList.add("hidden");
@@ -739,18 +775,57 @@
                 runOfflineOCR();
             });
 
-            // Pannello inserimento manuale
+            // Pannello inserimento manuale a barra singola
             const manualPanel = document.getElementById("manual-input-panel");
             const chevron = document.getElementById("icon-manual-chevron");
+            const singleManualInput = document.getElementById("input-manual-single-address");
+
             document.getElementById("btn-toggle-manual").addEventListener("click", () => {
                 manualPanel.classList.toggle("hidden");
                 chevron.classList.toggle("rotate-180");
+                if (!manualPanel.classList.contains("hidden")) {
+                    singleManualInput.focus();
+                }
+            });
+
+            const addManualAddressFromBar = () => {
+                const rawVal = singleManualInput.value || "";
+                const lines = rawVal
+                    .split(/\r?\n/)
+                    .map(l => l.trim())
+                    .filter(l => l.length >= 3);
+
+                if (lines.length === 0) {
+                    showToast("Scrivi un indirizzo prima di premere Invio.", "warning");
+                    return;
+                }
+
+                appState.manualAddresses.push(...lines);
+                singleManualInput.value = "";
+                renderManualAddressBoxes();
+                singleManualInput.focus();
+            };
+
+            singleManualInput.addEventListener("keydown", (e) => {
+                if (e.key === "Enter") {
+                    e.preventDefault();
+                    addManualAddressFromBar();
+                }
+            });
+
+            document.getElementById("btn-add-manual-single").addEventListener("click", () => {
+                addManualAddressFromBar();
             });
 
             document.getElementById("btn-import-manual").addEventListener("click", () => {
-                const rawText = document.getElementById("textarea-manual-addresses").value || "";
-                const lines = rawText
-                    .split(/\r?\n/)
+                const pendingText = singleManualInput.value.trim();
+                if (pendingText.length >= 3) {
+                    appState.manualAddresses.push(pendingText);
+                    singleManualInput.value = "";
+                    renderManualAddressBoxes();
+                }
+
+                const lines = appState.manualAddresses
                     .map(l => l.trim())
                     .filter(l => l.length >= 4);
 
@@ -770,6 +845,55 @@
                 appState.forcedIncludeSet.clear();
                 showToast("Caricati 12 indirizzi di esempio", "success");
                 goToStep(2);
+            });
+        }
+
+        /**
+         * Renderizza una casella di testo dedicata per ogni indirizzo inserito manualmente nello Step 1
+         */
+        function renderManualAddressBoxes() {
+            const listContainer = document.getElementById("manual-addresses-list");
+            if (!listContainer) return;
+
+            listContainer.innerHTML = "";
+
+            appState.manualAddresses.forEach((addr, index) => {
+                const row = document.createElement("div");
+                row.className = "flex items-center gap-2";
+                row.innerHTML = `
+                    <span class="w-6 h-6 rounded-full bg-blue-100 text-posteBlue text-xs font-extrabold flex items-center justify-center flex-shrink-0">
+                        ${index + 1}
+                    </span>
+                    <input type="text"
+                        value="${escapeHtml(addr)}"
+                        data-manual-idx="${index}"
+                        placeholder="Es. Via Cornelia 164, Roma"
+                        class="manual-addr-item-input flex-1 px-3 py-2 bg-slate-50 border border-slate-300 rounded-xl text-sm font-semibold text-slate-800 focus:outline-none focus:ring-2 focus:ring-posteBlue">
+                    <button type="button"
+                        data-manual-remove-idx="${index}"
+                        title="Rimuovi indirizzo"
+                        class="p-2 rounded-xl bg-red-50 hover:bg-red-100 text-red-600 transition-colors flex-shrink-0">
+                        <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.2">
+                            <path stroke-linecap="round" stroke-linejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                        </svg>
+                    </button>
+                `;
+                listContainer.appendChild(row);
+            });
+
+            listContainer.querySelectorAll(".manual-addr-item-input").forEach(input => {
+                input.addEventListener("input", (e) => {
+                    const idx = parseInt(e.target.dataset.manualIdx, 10);
+                    appState.manualAddresses[idx] = e.target.value;
+                });
+            });
+
+            listContainer.querySelectorAll("button[data-manual-remove-idx]").forEach(btn => {
+                btn.addEventListener("click", (e) => {
+                    const idx = parseInt(e.currentTarget.dataset.manualRemoveIdx, 10);
+                    appState.manualAddresses.splice(idx, 1);
+                    renderManualAddressBoxes();
+                });
             });
         }
 
@@ -1939,8 +2063,10 @@
             document.getElementById("btn-confirm-reset").addEventListener("click", () => {
                 localStorage.removeItem(STORAGE_KEYS.ACTIVE_SHIFT);
                 appState.activeRoute = null;
+                appState.manualAddresses = [];
                 appState.rawAddresses = [];
                 appState.forcedIncludeSet.clear();
+                renderManualAddressBoxes();
                 modalReset.classList.add("hidden");
                 goToStep(1);
                 showToast("Nuovo turno pronto", "info");

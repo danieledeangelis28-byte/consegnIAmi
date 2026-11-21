@@ -450,7 +450,7 @@
 
                     <button type="button" id="btn-append-roma"
                         class="px-3 py-2 bg-blue-50 hover:bg-blue-100 text-posteBlue font-bold text-xs rounded-xl flex-shrink-0 transition-colors">
-                        + Aggiungi ", Roma"
+                        + Aggiungi Comune
                     </button>
                 </div>
 
@@ -815,8 +815,20 @@
             startInput.value = savedStart;
             endInput.value = savedEnd;
 
+            // Pre-carica in background le coordinate della partenza per centrare subito i suggerimenti
+            const warmStartGeocode = () => {
+                const val = startInput.value.trim();
+                if (val.length >= 4) {
+                    geocodeAddress(val).catch(() => {});
+                }
+            };
+            setTimeout(warmStartGeocode, 400);
+
+            let startGeoTimer = null;
             startInput.addEventListener("input", () => {
                 localStorage.setItem(STORAGE_KEYS.START_ADDR, startInput.value.trim());
+                clearTimeout(startGeoTimer);
+                startGeoTimer = setTimeout(warmStartGeocode, 700);
             });
 
             endInput.addEventListener("input", () => {
@@ -831,7 +843,7 @@
         }
 
         /**
-         * STEP 1: Caricamento Immagine, Pre-elaborazione OCR & Input Manuale
+         * STEP 1: Caricamento Immagine, Pre-elaborazione OCR & Input Manuale con Suggerimenti
          */
         function initImageUpload() {
             const fileInput = document.getElementById("image-file-input");
@@ -874,12 +886,13 @@
                 runOfflineOCR();
             });
 
-            // Pannello inserimento manuale a barra singola
+            // Pannello inserimento manuale a barra singola con suggerimenti indirizzi
             const manualPanel = document.getElementById("manual-input-panel");
             const chevron = document.getElementById("icon-manual-chevron");
             const singleManualInput = document.getElementById("input-manual-single-address");
             const singleManualRomaBtn = document.getElementById("btn-manual-single-roma");
             const singleManualPriorityBtn = document.getElementById("btn-manual-single-priority");
+            const suggestionsDropdown = document.getElementById("manual-address-suggestions");
 
             const setSinglePriorityVisual = (isPriority) => {
                 singleManualPriorityBtn.dataset.priority = isPriority ? "true" : "false";
@@ -910,6 +923,7 @@
             });
 
             singleManualInput.addEventListener("focus", () => {
+                singleManualRomaBtn.textContent = `+ , ${getDefaultMunicipality()}`;
                 singleManualRomaBtn.classList.remove("hidden");
             });
 
@@ -932,8 +946,10 @@
                 singleManualInput.setSelectionRange(len, len);
             });
 
-            const addManualAddressFromBar = () => {
-                const rawVal = singleManualInput.value || "";
+            let hideSuggestions = () => {};
+
+            const addManualAddressFromBar = (overrideAddress = null) => {
+                const rawVal = overrideAddress !== null ? overrideAddress : (singleManualInput.value || "");
                 const isPriority = singleManualPriorityBtn.dataset.priority === "true";
                 const lines = rawVal
                     .split(/\r?\n/)
@@ -950,21 +966,17 @@
                 });
                 singleManualInput.value = "";
                 setSinglePriorityVisual(false);
-                hideManualSuggestions();
+                hideSuggestions();
                 renderManualAddressBoxes();
                 singleManualInput.focus();
             };
 
-            const hideManualSuggestions = initManualAddressAutocomplete(
+            hideSuggestions = initManualAddressAutocomplete(
                 singleManualInput,
-                document.getElementById("manual-address-suggestions"),
-                (selectedAddress) => {
-                    const isPriority = singleManualPriorityBtn.dataset.priority === "true";
-                    appState.manualAddresses.push({ address: selectedAddress, priority: isPriority });
-                    singleManualInput.value = "";
-                    setSinglePriorityVisual(false);
-                    renderManualAddressBoxes();
-                    singleManualInput.focus();
+                suggestionsDropdown,
+                (quickAddress) => {
+                    addManualAddressFromBar(quickAddress);
+                    showToast("Indirizzo aggiunto alla lista", "success");
                 }
             );
 
@@ -986,7 +998,7 @@
                     appState.manualAddresses.push({ address: pendingText, priority: isPriority });
                     singleManualInput.value = "";
                     setSinglePriorityVisual(false);
-                    hideManualSuggestions();
+                    hideSuggestions();
                     renderManualAddressBoxes();
                 }
 
@@ -1015,18 +1027,90 @@
         }
 
         /**
-         * Aggiunge ", Roma" in modo pulito evitando duplicazioni
+         * Ricava il comune predefinito dall'indirizzo di partenza (es. "Roma", "Ladispoli", ecc.)
+         */
+        function getDefaultMunicipality() {
+            const startVal = (document.getElementById("input-start-address")?.value || DEFAULT_START).trim();
+            const parts = startVal.split(",").map(p => p.trim()).filter(Boolean);
+            if (parts.length >= 2) {
+                const lastPart = parts[parts.length - 1].replace(/\b\d{5}\b/g, "").replace(/\([A-Z]{2}\)/gi, "").trim();
+                if (lastPart.length >= 2) return lastPart;
+            }
+            return "Roma";
+        }
+
+        /**
+         * Aggiunge il comune predefinito in modo pulito evitando duplicazioni
          */
         function appendRomaToText(text) {
+            const defaultCity = getDefaultMunicipality();
             const cleaned = (text || "").replace(/[,\s]+$/, "").trim();
-            if (!cleaned) return ", Roma";
-            if (/,\s*roma$/i.test(cleaned)) return cleaned;
-            return `${cleaned}, Roma`;
+            if (!cleaned) return `, ${defaultCity}`;
+            if (new RegExp(`,\\s*${defaultCity.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`, "i").test(cleaned)) {
+                return cleaned;
+            }
+            return `${cleaned}, ${defaultCity}`;
+        }
+
+        /**
+         * Analizza un indirizzo italiano separando via, numero civico (es. 164, 107/B, n. 12) ed eventuale comune
+         */
+        function parseItalianAddress(rawAddress, fallbackCity = null) {
+            const cleaned = (rawAddress || "").replace(/\s+/g, " ").trim();
+            const parts = cleaned.split(",").map(p => p.trim()).filter(Boolean);
+
+            let streetAndCivic = parts[0] || "";
+            let explicitCity = "";
+
+            if (parts.length >= 2) {
+                // Gestisce anche il formato "Via Cornelia, 164, Roma"
+                if (/^(?:n\.?|nr\.?|civ\.?)?\s*\d+[a-zA-Z]?(?:[\/\-]\d*[a-zA-Z]?)?$/i.test(parts[1])) {
+                    streetAndCivic = `${streetAndCivic} ${parts[1].replace(/^(?:n\.?|nr\.?|civ\.?)\s*/i, "")}`;
+                    explicitCity = parts.slice(2).join(", ");
+                } else {
+                    explicitCity = parts.slice(1).join(", ");
+                }
+            }
+
+            explicitCity = explicitCity
+                .replace(/\b\d{5}\b/g, "")
+                .replace(/\([A-Z]{2}\)/gi, "")
+                .replace(/\b(?:italia|italy|lazio)\b/gi, "")
+                .replace(/^[,\s]+|[,\s]+$/g, "")
+                .trim();
+
+            let street = streetAndCivic;
+            let houseNumber = "";
+
+            const civicMatch = streetAndCivic.match(/^(.*?)(?:\s+(?:n\.?|nr\.?|civ\.?)\s*|\s+)(\d+[a-zA-Z]?(?:[\/\-]\d*[a-zA-Z]?)?)$/i);
+            if (civicMatch && civicMatch[1].trim().length >= 3) {
+                street = civicMatch[1].trim();
+                houseNumber = civicMatch[2].trim();
+            }
+
+            return {
+                street,
+                houseNumber,
+                explicitCity,
+                city: explicitCity || fallbackCity || ""
+            };
+        }
+
+        function normalizeHouseNumber(numStr) {
+            return (numStr || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+        }
+
+        function houseNumbersMatch(a, b) {
+            const na = normalizeHouseNumber(a);
+            const nb = normalizeHouseNumber(b);
+            if (!na || !nb) return false;
+            return na === nb;
         }
 
         /**
          * Suggerimenti Indirizzi in Tempo Reale per l'Inserimento Manuale
-         * Combina cache locale istantanea + Photon (con bias sulla sede) + fallback Nominatim
+         * - Riconosce e valorizza i numeri civici esatti (Nominatim + Photon)
+         * - Mostra strade omonime in tutti i comuni limitrofi senza forzare un solo comune
          */
         function initManualAddressAutocomplete(inputEl, dropdownEl, onQuickAddAddress) {
             if (!inputEl || !dropdownEl) return () => {};
@@ -1043,77 +1127,103 @@
                 highlightedIndex = -1;
             };
 
-            const extractTypedHouseNumber = (queryText) => {
-                const streetPart = queryText.split(",")[0].trim();
-                const match = streetPart.match(/(?:^|\s)(\d+[a-zA-Z]?)$/);
-                return match ? match[1] : "";
-            };
-
             const getBiasCoordinates = () => {
                 const startVal = (document.getElementById("input-start-address")?.value || DEFAULT_START).trim().toLowerCase();
                 const cache = loadGeoCache();
                 if (cache[startVal] && Number.isFinite(cache[startVal].lat) && Number.isFinite(cache[startVal].lon)) {
                     return { lat: cache[startVal].lat, lon: cache[startVal].lon };
                 }
-                return { lat: 41.9028, lon: 12.4964 }; // Default Roma
+                return { lat: 41.9028, lon: 12.4964 };
             };
 
-            const formatPhotonSuggestion = (feat, typedHouseNum) => {
+            const formatPhotonSuggestion = (feat, parsedQuery, bias) => {
                 const props = feat?.properties || {};
                 const coords = feat?.geometry?.coordinates;
                 const street = (props.street || props.name || "").trim();
                 if (!street) return null;
 
-                let houseNum = (props.housenumber || "").trim();
-                if (!houseNum && typedHouseNum && !new RegExp(`\\b${typedHouseNum}\\b`, "i").test(street)) {
-                    houseNum = typedHouseNum;
-                }
+                const osmHouseNum = (props.housenumber || "").trim();
+                const effectiveHouseNum = osmHouseNum || parsedQuery.houseNumber || "";
+                const hasExactCivic = Boolean(osmHouseNum) && (!parsedQuery.houseNumber || houseNumbersMatch(osmHouseNum, parsedQuery.houseNumber));
 
-                const city = (props.city || props.town || props.village || props.municipality || "").trim();
+                const city = (props.city || props.town || props.village || props.municipality || props.locality || "").trim();
+                const county = (props.county || "").trim();
                 const district = (props.district || props.suburb || "").trim();
-                const mainLine = `${street}${houseNum ? " " + houseNum : ""}`;
+
+                const mainLine = `${street}${effectiveHouseNum ? " " + effectiveHouseNum : ""}`;
                 const fullAddress = city ? `${mainLine}, ${city}` : mainLine;
-                const subParts = [district, city, props.county].filter(Boolean);
+
+                const lat = Array.isArray(coords) ? parseFloat(coords[1]) : null;
+                const lon = Array.isArray(coords) ? parseFloat(coords[0]) : null;
+                const distKm = (Number.isFinite(lat) && Number.isFinite(lon))
+                    ? haversineKm(bias.lat, bias.lon, lat, lon)
+                    : 999;
+
+                const cityLabel = city && county && city.toLowerCase() !== county.toLowerCase()
+                    ? `${city} (${county})`
+                    : (city || county);
+                const subParts = [cityLabel, district, distKm < 200 ? `${distKm.toFixed(1)} km` : ""].filter(Boolean);
 
                 return {
                     mainText: mainLine,
                     subText: [...new Set(subParts)].join(" • ") || "Suggerimento stradale",
                     fullAddress,
-                    hasHouseNumber: Boolean(houseNum),
-                    lat: Array.isArray(coords) ? parseFloat(coords[1]) : null,
-                    lon: Array.isArray(coords) ? parseFloat(coords[0]) : null,
+                    cityKey: (city || county || "").toLowerCase(),
+                    streetKey: street.toLowerCase(),
+                    houseNumber: effectiveHouseNum,
+                    hasHouseNumber: Boolean(effectiveHouseNum),
+                    exactCivic: hasExactCivic,
+                    distKm,
+                    lat,
+                    lon,
                     fromCache: false
                 };
             };
 
-            const formatNominatimSuggestion = (item, typedHouseNum) => {
+            const formatNominatimSuggestion = (item, parsedQuery, bias) => {
                 const addr = item?.address || {};
-                const street = (addr.road || addr.pedestrian || addr.footway || addr.square || item.name || "").trim();
+                const street = (addr.road || addr.pedestrian || addr.footway || addr.square || addr.residential || item.name || "").trim();
                 if (!street) return null;
 
-                let houseNum = (addr.house_number || "").trim();
-                if (!houseNum && typedHouseNum && !new RegExp(`\\b${typedHouseNum}\\b`, "i").test(street)) {
-                    houseNum = typedHouseNum;
-                }
+                const osmHouseNum = (addr.house_number || "").trim();
+                const effectiveHouseNum = osmHouseNum || parsedQuery.houseNumber || "";
+                const hasExactCivic = Boolean(osmHouseNum) && (!parsedQuery.houseNumber || houseNumbersMatch(osmHouseNum, parsedQuery.houseNumber));
 
-                const city = (addr.city || addr.town || addr.village || addr.municipality || "").trim();
-                const suburb = (addr.suburb || addr.quarter || "").trim();
-                const mainLine = `${street}${houseNum ? " " + houseNum : ""}`;
+                const city = (addr.city || addr.town || addr.village || addr.municipality || addr.hamlet || "").trim();
+                const county = (addr.county || "").trim();
+                const suburb = (addr.suburb || addr.quarter || addr.neighbourhood || "").trim();
+
+                const mainLine = `${street}${effectiveHouseNum ? " " + effectiveHouseNum : ""}`;
                 const fullAddress = city ? `${mainLine}, ${city}` : mainLine;
-                const subParts = [suburb, city].filter(Boolean);
+
+                const lat = parseFloat(item.lat);
+                const lon = parseFloat(item.lon);
+                const distKm = (Number.isFinite(lat) && Number.isFinite(lon))
+                    ? haversineKm(bias.lat, bias.lon, lat, lon)
+                    : 999;
+
+                const cityLabel = city && county && city.toLowerCase() !== county.toLowerCase()
+                    ? `${city} (${county})`
+                    : (city || county);
+                const subParts = [cityLabel, suburb, distKm < 200 ? `${distKm.toFixed(1)} km` : ""].filter(Boolean);
 
                 return {
                     mainText: mainLine,
                     subText: [...new Set(subParts)].join(" • ") || "OpenStreetMap",
                     fullAddress,
-                    hasHouseNumber: Boolean(houseNum),
-                    lat: parseFloat(item.lat),
-                    lon: parseFloat(item.lon),
+                    cityKey: (city || county || "").toLowerCase(),
+                    streetKey: street.toLowerCase(),
+                    houseNumber: effectiveHouseNum,
+                    hasHouseNumber: Boolean(effectiveHouseNum),
+                    exactCivic: hasExactCivic,
+                    distKm,
+                    lat,
+                    lon,
                     fromCache: false
                 };
             };
 
-            const getLocalCacheSuggestions = (queryText) => {
+            const getLocalCacheSuggestions = (queryText, bias) => {
                 const q = queryText.toLowerCase();
                 const cache = loadGeoCache();
                 const matches = [];
@@ -1123,11 +1233,19 @@
                         const geo = cache[key];
                         const formatted = key.replace(/\b\w/g, (c) => c.toUpperCase());
                         const parts = formatted.split(",");
+                        const distKm = (Number.isFinite(geo.lat) && Number.isFinite(geo.lon))
+                            ? haversineKm(bias.lat, bias.lon, geo.lat, geo.lon)
+                            : 999;
                         matches.push({
                             mainText: parts[0].trim(),
                             subText: (parts.slice(1).join(",").trim() || "Indirizzo salvato") + " • Recente",
                             fullAddress: formatted,
+                            cityKey: (parts[1] || "").trim().toLowerCase(),
+                            streetKey: parts[0].trim().toLowerCase(),
+                            houseNumber: (parts[0].match(/\d+[a-zA-Z]?$/) || [""])[0],
                             hasHouseNumber: /\d+/.test(parts[0]),
+                            exactCivic: Boolean(geo.exactCivic),
+                            distKm,
                             lat: geo.lat,
                             lon: geo.lon,
                             fromCache: true
@@ -1139,12 +1257,15 @@
             };
 
             const persistSuggestionInCache = (item) => {
-                if (item && Number.isFinite(item.lat) && Number.isFinite(item.lon) && item.fullAddress) {
+                // Salva nella cache solo se il civico è esatto o se l'indirizzo non ha civico,
+                // evitando di sovrascrivere un civico con il centro strada
+                if (item && Number.isFinite(item.lat) && Number.isFinite(item.lon) && item.fullAddress && (!item.hasHouseNumber || item.exactCivic)) {
                     const cache = loadGeoCache();
                     cache[item.fullAddress.trim().toLowerCase()] = {
                         lat: item.lat,
                         lon: item.lon,
-                        displayName: item.fullAddress
+                        displayName: item.fullAddress,
+                        exactCivic: Boolean(item.exactCivic)
                     };
                     saveGeoCache(cache);
                 }
@@ -1156,7 +1277,7 @@
                 hideDropdown();
                 inputEl.focus();
 
-                // Se manca il civico e c'è ", Roma", posiziona il cursore prima della virgola per scriverlo al volo
+                // Se manca il civico e c'è ", Comune", posiziona il cursore prima della virgola per scriverlo al volo
                 const commaIdx = item.fullAddress.indexOf(",");
                 if (!item.hasHouseNumber && commaIdx > 0) {
                     inputEl.setSelectionRange(commaIdx, commaIdx);
@@ -1181,7 +1302,7 @@
                     dropdownEl.innerHTML = `
                         <div class="px-3.5 py-2.5 text-xs font-semibold text-slate-500 flex items-center gap-2">
                             <span class="w-3.5 h-3.5 rounded-full border-2 border-posteBlue border-t-transparent animate-spin inline-block"></span>
-                            <span>Ricerca indirizzi...</span>
+                            <span>Ricerca civici e comuni...</span>
                         </div>
                     `;
                     dropdownEl.classList.remove("hidden");
@@ -1192,17 +1313,27 @@
                     const row = document.createElement("div");
                     row.dataset.suggIdx = String(idx);
                     row.className = "suggestion-row flex items-center justify-between gap-2 px-3 py-2.5 hover:bg-blue-50/80 transition-colors cursor-pointer";
+
+                    const civicBadge = item.exactCivic
+                        ? `<span class="text-[10px] font-extrabold px-1.5 py-0.5 rounded bg-green-100 text-green-800 flex-shrink-0">Civico esatto</span>`
+                        : (item.hasHouseNumber
+                            ? `<span class="text-[10px] font-bold px-1.5 py-0.5 rounded bg-blue-100 text-posteBlue flex-shrink-0">Civico ${escapeHtml(item.houseNumber)}</span>`
+                            : `<span class="text-[10px] font-semibold px-1.5 py-0.5 rounded bg-slate-100 text-slate-500 flex-shrink-0">+ Civico</span>`);
+
                     row.innerHTML = `
                         <div class="flex items-center gap-2.5 min-w-0 flex-1">
-                            <span class="w-6 h-6 rounded-lg ${item.fromCache ? "bg-amber-100 text-amber-700" : "bg-blue-100 text-posteBlue"} flex items-center justify-center flex-shrink-0">
+                            <span class="w-6 h-6 rounded-lg ${item.exactCivic ? "bg-green-100 text-green-700" : (item.fromCache ? "bg-amber-100 text-amber-700" : "bg-blue-100 text-posteBlue")} flex items-center justify-center flex-shrink-0">
                                 <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.4">
                                     <path stroke-linecap="round" stroke-linejoin="round" d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z" />
                                     <path stroke-linecap="round" stroke-linejoin="round" d="M15 11a3 3 0 11-6 0 3 3 0 016 0z" />
                                 </svg>
                             </span>
                             <div class="min-w-0 flex-1">
-                                <p class="text-xs font-extrabold text-slate-800 truncate">${escapeHtml(item.mainText)}</p>
-                                <p class="text-[11px] font-medium text-slate-500 truncate">${escapeHtml(item.subText)}</p>
+                                <div class="flex items-center gap-1.5">
+                                    <p class="text-xs font-extrabold text-slate-800 truncate">${escapeHtml(item.mainText)}</p>
+                                    ${civicBadge}
+                                </div>
+                                <p class="text-[11px] font-medium text-slate-500 truncate mt-0.5">${escapeHtml(item.subText)}</p>
                             </div>
                         </div>
                         <button type="button"
@@ -1248,7 +1379,9 @@
                     return;
                 }
 
-                const localMatches = getLocalCacheSuggestions(query);
+                const bias = getBiasCoordinates();
+                const parsedQuery = parseItalianAddress(query, null);
+                const localMatches = getLocalCacheSuggestions(query, bias);
                 renderSuggestions(localMatches, true);
 
                 if (activeAbortController) {
@@ -1257,58 +1390,66 @@
                 activeAbortController = new AbortController();
                 const signal = activeAbortController.signal;
 
-                const typedHouseNum = extractTypedHouseNumber(query);
-                const bias = getBiasCoordinates();
-                const searchQuery = /roma|marinella|fiumicino|guidonia|tivoli|pomezia|ciampino|lazio/i.test(query)
-                    ? query
-                    : `${query}, Roma`;
+                // Cerca SENZA forzare un solo comune, così emergono tutte le strade omonime nei vari comuni
+                const freeQuery = parsedQuery.explicitCity
+                    ? `${parsedQuery.street}${parsedQuery.houseNumber ? " " + parsedQuery.houseNumber : ""}, ${parsedQuery.explicitCity}`
+                    : `${parsedQuery.street}${parsedQuery.houseNumber ? " " + parsedQuery.houseNumber : ""}`;
 
-                const results = [...localMatches];
-                const seen = new Set(results.map(r => r.fullAddress.toLowerCase()));
+                const viewbox = `${(bias.lon - 0.55).toFixed(4)},${(bias.lat + 0.45).toFixed(4)},${(bias.lon + 0.55).toFixed(4)},${(bias.lat - 0.45).toFixed(4)}`;
 
-                try {
-                    const photonUrl = `https://photon.komoot.io/api/?q=${encodeURIComponent(searchQuery)}&limit=6&lang=it&lat=${bias.lat.toFixed(4)}&lon=${bias.lon.toFixed(4)}`;
-                    const res = await fetch(photonUrl, { signal });
-                    if (res.ok) {
-                        const data = await res.json();
-                        const features = Array.isArray(data?.features) ? data.features : [];
-                        features.forEach((feat) => {
-                            const parsed = formatPhotonSuggestion(feat, typedHouseNum);
-                            if (parsed && !seen.has(parsed.fullAddress.toLowerCase())) {
-                                seen.add(parsed.fullAddress.toLowerCase());
-                                results.push(parsed);
-                            }
-                        });
+                const photonUrl = `https://photon.komoot.io/api/?q=${encodeURIComponent(freeQuery)}&limit=10&lang=it&lat=${bias.lat.toFixed(4)}&lon=${bias.lon.toFixed(4)}`;
+                const nomUrl = `https://nominatim.openstreetmap.org/search?format=jsonv2&addressdetails=1&limit=8&countrycodes=it&viewbox=${viewbox}&q=${encodeURIComponent(freeQuery)}`;
+
+                const [photonRes, nomRes] = await Promise.allSettled([
+                    fetch(photonUrl, { signal }).then(r => r.ok ? r.json() : null),
+                    fetch(nomUrl, { signal }).then(r => r.ok ? r.json() : null)
+                ]);
+
+                if (signal.aborted) return;
+
+                const candidates = [...localMatches];
+
+                if (nomRes.status === "fulfilled" && Array.isArray(nomRes.value)) {
+                    nomRes.value.forEach((item) => {
+                        const parsed = formatNominatimSuggestion(item, parsedQuery, bias);
+                        if (parsed) candidates.push(parsed);
+                    });
+                }
+
+                if (photonRes.status === "fulfilled" && Array.isArray(photonRes.value?.features)) {
+                    photonRes.value.features.forEach((feat) => {
+                        const parsed = formatPhotonSuggestion(feat, parsedQuery, bias);
+                        if (parsed) candidates.push(parsed);
+                    });
+                }
+
+                // Deduplica per (indirizzo completo + comune) mantenendo la versione con civico esatto se disponibile
+                const byKey = new Map();
+                candidates.forEach((cand) => {
+                    const key = cand.fullAddress.toLowerCase();
+                    const existing = byKey.get(key);
+                    if (!existing) {
+                        byKey.set(key, cand);
+                    } else if (!existing.exactCivic && cand.exactCivic) {
+                        byKey.set(key, cand);
                     }
-                } catch (err) {
-                    if (err?.name === "AbortError") return;
-                }
+                });
 
-                // Fallback su Nominatim se Photon non ha trovato risultati
-                if (results.length === 0) {
-                    try {
-                        const nomUrl = `https://nominatim.openstreetmap.org/search?format=json&addressdetails=1&limit=5&countrycodes=it&q=${encodeURIComponent(searchQuery)}`;
-                        const res = await fetch(nomUrl, { signal });
-                        if (res.ok) {
-                            const data = await res.json();
-                            if (Array.isArray(data)) {
-                                data.forEach((item) => {
-                                    const parsed = formatNominatimSuggestion(item, typedHouseNum);
-                                    if (parsed && !seen.has(parsed.fullAddress.toLowerCase())) {
-                                        seen.add(parsed.fullAddress.toLowerCase());
-                                        results.push(parsed);
-                                    }
-                                });
-                            }
-                        }
-                    } catch (err) {
-                        if (err?.name === "AbortError") return;
+                const deduped = Array.from(byKey.values());
+
+                // Ordina: 1) corrispondenza comune esplicito, 2) civico esatto, 3) vicinanza alla sede di partenza
+                deduped.sort((a, b) => {
+                    if (parsedQuery.explicitCity) {
+                        const targetCity = parsedQuery.explicitCity.toLowerCase();
+                        const aCityMatch = a.cityKey.includes(targetCity) ? 1 : 0;
+                        const bCityMatch = b.cityKey.includes(targetCity) ? 1 : 0;
+                        if (aCityMatch !== bCityMatch) return bCityMatch - aCityMatch;
                     }
-                }
+                    if (a.exactCivic !== b.exactCivic) return (b.exactCivic ? 1 : 0) - (a.exactCivic ? 1 : 0);
+                    return a.distKm - b.distKm;
+                });
 
-                if (!signal.aborted) {
-                    renderSuggestions(results.slice(0, 5), false);
-                }
+                renderSuggestions(deduped.slice(0, 6), false);
             };
 
             inputEl.addEventListener("input", () => {
@@ -1321,7 +1462,7 @@
                 }
                 debounceTimer = setTimeout(() => {
                     fetchSuggestions(val);
-                }, 280);
+                }, 300);
             });
 
             inputEl.addEventListener("keydown", (e) => {
@@ -1857,7 +1998,7 @@
         }
 
         /**
-         * Geocodifica Gratuita (Nominatim + Fallback senza civico + Photon) con Cache Locale
+         * Geocodifica Gratuita ad Alta Precisione (Civici Esatti + Multi-Comune) con Cache Locale
          */
         function loadGeoCache() {
             try {
@@ -1869,6 +2010,10 @@
 
         function saveGeoCache(cacheObj) {
             try {
+                const keys = Object.keys(cacheObj);
+                if (keys.length > 400) {
+                    keys.slice(0, keys.length - 350).forEach(k => delete cacheObj[k]);
+                }
                 localStorage.setItem(STORAGE_KEYS.GEO_CACHE, JSON.stringify(cacheObj));
             } catch {
                 // Ignora quota
@@ -1877,77 +2022,188 @@
 
         async function throttleNominatim() {
             const elapsed = Date.now() - lastGeocodeTimestamp;
-            if (elapsed < 1200) {
-                await new Promise(r => setTimeout(r, 1200 - elapsed));
+            if (elapsed < 1100) {
+                await new Promise(r => setTimeout(r, 1100 - elapsed));
             }
             lastGeocodeTimestamp = Date.now();
         }
 
-        async function queryNominatimSingle(queryText) {
+        function extractNominatimCandidate(item, expectedHouseNum, expectedCity, biasGeo) {
+            const addr = item?.address || {};
+            const lat = parseFloat(item.lat);
+            const lon = parseFloat(item.lon);
+            if (!Number.isFinite(lat) || !Number.isFinite(lon)) return null;
+
+            const osmHouseNum = (addr.house_number || "").trim();
+            const city = (addr.city || addr.town || addr.village || addr.municipality || addr.hamlet || addr.county || "").trim();
+            const exactCivic = Boolean(expectedHouseNum) && houseNumbersMatch(osmHouseNum, expectedHouseNum);
+            const cityMatches = !expectedCity || city.toLowerCase().includes(expectedCity.toLowerCase());
+            const distKm = biasGeo ? haversineKm(biasGeo.lat, biasGeo.lon, lat, lon) : 0;
+
+            return {
+                lat,
+                lon,
+                displayName: item.display_name,
+                exactCivic,
+                cityMatches,
+                distKm
+            };
+        }
+
+        async function queryNominatimCandidates(queryText, parsed, biasGeo, structured = false) {
             await throttleNominatim();
-            const url = `https://nominatim.openstreetmap.org/search?format=json&limit=1&countrycodes=it&q=${encodeURIComponent(queryText)}`;
-            const res = await fetchWithTimeout(url, 8000);
-            if (!res.ok) return null;
-            const data = await res.json();
-            if (Array.isArray(data) && data.length > 0) {
-                return {
-                    lat: parseFloat(data[0].lat),
-                    lon: parseFloat(data[0].lon),
-                    displayName: data[0].display_name
-                };
+            let url = "https://nominatim.openstreetmap.org/search?format=jsonv2&addressdetails=1&limit=5&countrycodes=it";
+            if (biasGeo) {
+                const viewbox = `${(biasGeo.lon - 0.55).toFixed(4)},${(biasGeo.lat + 0.45).toFixed(4)},${(biasGeo.lon + 0.55).toFixed(4)},${(biasGeo.lat - 0.45).toFixed(4)}`;
+                url += `&viewbox=${viewbox}`;
             }
-            return null;
+
+            if (structured && parsed.street) {
+                const streetParam = parsed.houseNumber ? `${parsed.houseNumber} ${parsed.street}` : parsed.street;
+                url += `&street=${encodeURIComponent(streetParam)}`;
+                if (parsed.city) {
+                    url += `&city=${encodeURIComponent(parsed.city)}`;
+                }
+            } else {
+                url += `&q=${encodeURIComponent(queryText)}`;
+            }
+
+            const res = await fetchWithTimeout(url, 8000);
+            if (!res.ok) return [];
+            const data = await res.json();
+            if (!Array.isArray(data)) return [];
+
+            return data
+                .map(item => extractNominatimCandidate(item, parsed.houseNumber, parsed.city, biasGeo))
+                .filter(Boolean);
         }
 
-        async function queryPhotonSingle(queryText) {
-            const url = `https://photon.komoot.io/api/?q=${encodeURIComponent(queryText)}&limit=1&lang=it`;
-            const res = await fetchWithTimeout(url, 8000);
-            if (!res.ok) return null;
-            const data = await res.json();
-            const feat = data?.features?.[0];
-            if (feat && Array.isArray(feat.geometry?.coordinates)) {
-                return {
-                    lat: parseFloat(feat.geometry.coordinates[1]),
-                    lon: parseFloat(feat.geometry.coordinates[0]),
-                    displayName: feat.properties?.name || queryText
-                };
+        async function queryPhotonCandidates(queryText, parsed, biasGeo) {
+            let url = `https://photon.komoot.io/api/?q=${encodeURIComponent(queryText)}&limit=6&lang=it`;
+            if (biasGeo) {
+                url += `&lat=${biasGeo.lat.toFixed(4)}&lon=${biasGeo.lon.toFixed(4)}`;
             }
-            return null;
+            const res = await fetchWithTimeout(url, 8000);
+            if (!res.ok) return [];
+            const data = await res.json();
+            const features = Array.isArray(data?.features) ? data.features : [];
+
+            return features.map(feat => {
+                const coords = feat?.geometry?.coordinates;
+                const props = feat?.properties || {};
+                if (!Array.isArray(coords)) return null;
+                const lat = parseFloat(coords[1]);
+                const lon = parseFloat(coords[0]);
+                if (!Number.isFinite(lat) || !Number.isFinite(lon)) return null;
+
+                const osmHouseNum = (props.housenumber || "").trim();
+                const city = (props.city || props.town || props.village || props.municipality || props.locality || props.county || "").trim();
+                const exactCivic = Boolean(parsed.houseNumber) && houseNumbersMatch(osmHouseNum, parsed.houseNumber);
+                const cityMatches = !parsed.city || city.toLowerCase().includes(parsed.city.toLowerCase());
+                const distKm = biasGeo ? haversineKm(biasGeo.lat, biasGeo.lon, lat, lon) : 0;
+
+                return {
+                    lat,
+                    lon,
+                    displayName: `${props.street || props.name || queryText}${osmHouseNum ? " " + osmHouseNum : ""}${city ? ", " + city : ""}`,
+                    exactCivic,
+                    cityMatches,
+                    distKm
+                };
+            }).filter(Boolean);
         }
 
-        async function geocodeAddress(rawAddress) {
-            const normalizedKey = rawAddress.trim().toLowerCase();
+        function pickBestGeoCandidate(candidates) {
+            if (!Array.isArray(candidates) || candidates.length === 0) return null;
+            const sorted = [...candidates].sort((a, b) => {
+                if (a.cityMatches !== b.cityMatches) return (b.cityMatches ? 1 : 0) - (a.cityMatches ? 1 : 0);
+                if (a.exactCivic !== b.exactCivic) return (b.exactCivic ? 1 : 0) - (a.exactCivic ? 1 : 0);
+                return a.distKm - b.distKm;
+            });
+            return sorted[0];
+        }
+
+        async function geocodeAddress(rawAddress, biasGeo = null) {
+            const defaultCity = getDefaultMunicipality();
+            const parsed = parseItalianAddress(rawAddress, defaultCity);
+            const normalizedKey = `${parsed.street}${parsed.houseNumber ? " " + parsed.houseNumber : ""}${parsed.city ? ", " + parsed.city : ""}`
+                .trim()
+                .toLowerCase();
+
             const cache = loadGeoCache();
-            if (cache[normalizedKey]) {
+            if (cache[normalizedKey] && (!parsed.houseNumber || cache[normalizedKey].exactCivic)) {
                 return { geo: cache[normalizedKey], fromCache: true };
             }
 
-            const queryWithRoma = /roma|marinella|fiumicino|guidonia|tivoli|pomezia|ciampino|lazio/i.test(rawAddress)
-                ? rawAddress
-                : `${rawAddress}, Roma`;
+            const effectiveBias = biasGeo || (() => {
+                const startKey = (document.getElementById("input-start-address")?.value || DEFAULT_START).trim().toLowerCase();
+                return cache[startKey] || null;
+            })();
 
-            let geo = null;
+            const fullQuery = `${parsed.street}${parsed.houseNumber ? " " + parsed.houseNumber : ""}${parsed.city ? ", " + parsed.city : ""}`;
+            let bestCandidate = null;
+
             try {
-                geo = await queryNominatimSingle(queryWithRoma);
+                // 1. Ricerca rapida su Photon (se trova il civico esatto nel comune giusto, risponde in ~150 ms)
+                const photonMatches = await queryPhotonCandidates(fullQuery, parsed, effectiveBias);
+                bestCandidate = pickBestGeoCandidate(photonMatches);
 
-                if (!geo) {
-                    const withoutCivic = queryWithRoma.replace(/,?\s*\d+[a-zA-Z]?\b/, "").trim();
-                    if (withoutCivic !== queryWithRoma) {
-                        geo = await queryNominatimSingle(withoutCivic);
+                // 2. Se c'è un numero civico e Photon non ha restituito il civico esatto, interroga Nominatim (strutturato + libero)
+                if (parsed.houseNumber && (!bestCandidate || !bestCandidate.exactCivic || !bestCandidate.cityMatches)) {
+                    const nomStructured = await queryNominatimCandidates(fullQuery, parsed, effectiveBias, true);
+                    const bestStructured = pickBestGeoCandidate(nomStructured);
+                    if (bestStructured && (bestStructured.exactCivic || !bestCandidate)) {
+                        bestCandidate = bestStructured;
+                    }
+
+                    if (!bestCandidate || !bestCandidate.exactCivic) {
+                        const nomFree = await queryNominatimCandidates(fullQuery, parsed, effectiveBias, false);
+                        const bestFree = pickBestGeoCandidate(nomFree);
+                        if (bestFree && (bestFree.exactCivic || !bestCandidate)) {
+                            bestCandidate = bestFree;
+                        }
+                    }
+                } else if (!bestCandidate) {
+                    const nomMatches = await queryNominatimCandidates(fullQuery, parsed, effectiveBias, false);
+                    bestCandidate = pickBestGeoCandidate(nomMatches);
+                }
+
+                // 3. Se l'utente non aveva scritto il comune e nel comune di partenza non esiste, cerca nei comuni limitrofi
+                if ((!bestCandidate || !bestCandidate.cityMatches) && !parsed.explicitCity) {
+                    const noCityParsed = { ...parsed, city: "" };
+                    const noCityQuery = `${parsed.street}${parsed.houseNumber ? " " + parsed.houseNumber : ""}`;
+                    const nearbyPhoton = await queryPhotonCandidates(noCityQuery, noCityParsed, effectiveBias);
+                    const bestNearby = pickBestGeoCandidate(nearbyPhoton);
+                    if (bestNearby && bestNearby.distKm < 60) {
+                        bestCandidate = bestNearby;
                     }
                 }
 
-                if (!geo) {
-                    geo = await queryPhotonSingle(queryWithRoma);
+                // 4. Ultimo fallback: strada senza civico nello stesso comune
+                if (!bestCandidate && parsed.houseNumber) {
+                    const streetOnlyParsed = { ...parsed, houseNumber: "" };
+                    const streetOnlyQuery = `${parsed.street}${parsed.city ? ", " + parsed.city : ""}`;
+                    const fallbackNom = await queryNominatimCandidates(streetOnlyQuery, streetOnlyParsed, effectiveBias, false);
+                    bestCandidate = pickBestGeoCandidate(fallbackNom);
                 }
             } catch (err) {
                 console.warn("Errore geocodifica per:", rawAddress, err);
             }
 
-            if (geo && Number.isFinite(geo.lat) && Number.isFinite(geo.lon)) {
-                cache[normalizedKey] = geo;
+            if (bestCandidate && Number.isFinite(bestCandidate.lat) && Number.isFinite(bestCandidate.lon)) {
+                const geoRecord = {
+                    lat: bestCandidate.lat,
+                    lon: bestCandidate.lon,
+                    displayName: bestCandidate.displayName,
+                    exactCivic: Boolean(bestCandidate.exactCivic)
+                };
+                cache[normalizedKey] = geoRecord;
                 saveGeoCache(cache);
-                return { geo, fromCache: false };
+                return { geo: geoRecord, fromCache: false };
+            }
+
+            if (cache[normalizedKey]) {
+                return { geo: cache[normalizedKey], fromCache: true };
             }
 
             return { geo: null, fromCache: false };
@@ -2175,7 +2431,7 @@
 
                 const { geo: endGeo } = (endAddress.toLowerCase() === startAddress.toLowerCase())
                     ? { geo: { ...startGeo, displayName: endAddress } }
-                    : await geocodeAddress(endAddress);
+                    : await geocodeAddress(endAddress, startGeo);
 
                 if (!endGeo) {
                     showToast("Impossibile trovare l'indirizzo di Arrivo.", "error");
@@ -2194,7 +2450,7 @@
                     const pct = 15 + Math.round(((i + 1) / totalStops) * 60);
                     updateCalcUI(pct, "Ricerca indirizzi sulla mappa...", `${i + 1}/${totalStops}: ${addr}`);
 
-                    const { geo } = await geocodeAddress(addr);
+                    const { geo } = await geocodeAddress(addr, startGeo);
                     if (!geo) {
                         notFound.push(addr);
                         continue;

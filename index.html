@@ -311,10 +311,15 @@
                     </button>
 
                     <div id="manual-input-panel" class="hidden space-y-2.5 pt-1">
-                        <div class="flex items-center gap-2">
+                        <div class="flex items-center gap-1.5">
                             <input type="text" id="input-manual-single-address" enterkeyhint="enter"
-                                class="flex-1 px-3.5 py-2.5 bg-slate-50 border border-slate-300 rounded-xl text-sm font-semibold text-slate-800 focus:outline-none focus:ring-2 focus:ring-posteBlue"
+                                class="flex-1 min-w-0 px-3.5 py-2.5 bg-slate-50 border border-slate-300 rounded-xl text-sm font-semibold text-slate-800 focus:outline-none focus:ring-2 focus:ring-posteBlue"
                                 placeholder="Scrivi un indirizzo e premi Invio...">
+                            <button type="button" id="btn-manual-single-roma"
+                                title='Aggiungi ", Roma"'
+                                class="hidden px-2.5 py-2.5 bg-blue-50 hover:bg-blue-100 active:bg-blue-200 text-posteBlue border border-posteBlue/25 font-extrabold text-xs rounded-xl transition-all flex-shrink-0">
+                                + , Roma
+                            </button>
                             <button type="button" id="btn-add-manual-single"
                                 title="Aggiungi indirizzo"
                                 class="px-3.5 py-2.5 bg-posteBlue hover:bg-posteBlueDark text-posteYellow font-black text-sm rounded-xl shadow-sm transition-colors flex-shrink-0">
@@ -779,6 +784,7 @@
             const manualPanel = document.getElementById("manual-input-panel");
             const chevron = document.getElementById("icon-manual-chevron");
             const singleManualInput = document.getElementById("input-manual-single-address");
+            const singleManualRomaBtn = document.getElementById("btn-manual-single-roma");
 
             document.getElementById("btn-toggle-manual").addEventListener("click", () => {
                 manualPanel.classList.toggle("hidden");
@@ -786,6 +792,29 @@
                 if (!manualPanel.classList.contains("hidden")) {
                     singleManualInput.focus();
                 }
+            });
+
+            singleManualInput.addEventListener("focus", () => {
+                singleManualRomaBtn.classList.remove("hidden");
+            });
+
+            singleManualInput.addEventListener("blur", () => {
+                setTimeout(() => {
+                    if (document.activeElement !== singleManualInput) {
+                        singleManualRomaBtn.classList.add("hidden");
+                    }
+                }, 180);
+            });
+
+            singleManualRomaBtn.addEventListener("mousedown", (e) => {
+                e.preventDefault();
+            });
+
+            singleManualRomaBtn.addEventListener("click", () => {
+                singleManualInput.value = appendRomaToText(singleManualInput.value);
+                singleManualInput.focus();
+                const len = singleManualInput.value.length;
+                singleManualInput.setSelectionRange(len, len);
             });
 
             const addManualAddressFromBar = () => {
@@ -849,6 +878,16 @@
         }
 
         /**
+         * Aggiunge ", Roma" in modo pulito evitando duplicazioni
+         */
+        function appendRomaToText(text) {
+            const cleaned = (text || "").replace(/[,\s]+$/, "").trim();
+            if (!cleaned) return ", Roma";
+            if (/,\s*roma$/i.test(cleaned)) return cleaned;
+            return `${cleaned}, Roma`;
+        }
+
+        /**
          * Renderizza una casella di testo dedicata per ogni indirizzo inserito manualmente nello Step 1
          */
         function renderManualAddressBoxes() {
@@ -859,7 +898,7 @@
 
             appState.manualAddresses.forEach((addr, index) => {
                 const row = document.createElement("div");
-                row.className = "flex items-center gap-2";
+                row.className = "flex items-center gap-1.5";
                 row.innerHTML = `
                     <span class="w-6 h-6 rounded-full bg-blue-100 text-posteBlue text-xs font-extrabold flex items-center justify-center flex-shrink-0">
                         ${index + 1}
@@ -868,7 +907,13 @@
                         value="${escapeHtml(addr)}"
                         data-manual-idx="${index}"
                         placeholder="Es. Via Cornelia 164, Roma"
-                        class="manual-addr-item-input flex-1 px-3 py-2 bg-slate-50 border border-slate-300 rounded-xl text-sm font-semibold text-slate-800 focus:outline-none focus:ring-2 focus:ring-posteBlue">
+                        class="manual-addr-item-input flex-1 min-w-0 px-3 py-2 bg-slate-50 border border-slate-300 rounded-xl text-sm font-semibold text-slate-800 focus:outline-none focus:ring-2 focus:ring-posteBlue">
+                    <button type="button"
+                        data-manual-roma-idx="${index}"
+                        title='Aggiungi ", Roma"'
+                        class="manual-row-roma-btn hidden px-2 py-2 bg-blue-50 hover:bg-blue-100 active:bg-blue-200 text-posteBlue border border-posteBlue/25 font-extrabold text-[11px] rounded-xl transition-all flex-shrink-0">
+                        + , Roma
+                    </button>
                     <button type="button"
                         data-manual-remove-idx="${index}"
                         title="Rimuovi indirizzo"
@@ -882,10 +927,41 @@
             });
 
             listContainer.querySelectorAll(".manual-addr-item-input").forEach(input => {
+                const row = input.closest("div");
+                const romaBtn = row ? row.querySelector(".manual-row-roma-btn") : null;
+
                 input.addEventListener("input", (e) => {
                     const idx = parseInt(e.target.dataset.manualIdx, 10);
                     appState.manualAddresses[idx] = e.target.value;
                 });
+
+                if (romaBtn) {
+                    input.addEventListener("focus", () => {
+                        romaBtn.classList.remove("hidden");
+                    });
+
+                    input.addEventListener("blur", () => {
+                        setTimeout(() => {
+                            if (document.activeElement !== input) {
+                                romaBtn.classList.add("hidden");
+                            }
+                        }, 180);
+                    });
+
+                    romaBtn.addEventListener("mousedown", (e) => {
+                        e.preventDefault();
+                    });
+
+                    romaBtn.addEventListener("click", () => {
+                        const idx = parseInt(input.dataset.manualIdx, 10);
+                        const updated = appendRomaToText(input.value);
+                        input.value = updated;
+                        appState.manualAddresses[idx] = updated;
+                        input.focus();
+                        const len = updated.length;
+                        input.setSelectionRange(len, len);
+                    });
+                }
             });
 
             listContainer.querySelectorAll("button[data-manual-remove-idx]").forEach(btn => {

@@ -3,7 +3,58 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <meta name="theme-color" content="#0039A6">
+    <meta name="mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="apple-mobile-web-app-title" content="Consegne">
     <title>Ottimizzatore Consegne - Poste</title>
+
+    <!-- Icone per Schermata Home (iPhone / Android) e Browser -->
+    <link rel="icon" type="image/png" sizes="192x192" href="icona-192.png">
+    <link rel="icon" type="image/png" sizes="512x512" href="icona-512.png">
+    <link rel="apple-touch-icon" sizes="180x180" href="icona-512.png">
+    <link rel="apple-touch-icon" href="icona-512.png">
+    <link rel="manifest" id="pwa-manifest">
+    <script>
+        // Configura il Web App Manifest con percorsi assoluti per icona-192.png e icona-512.png
+        (function () {
+            try {
+                const baseUrl = window.location.href.split("#")[0].split("?")[0];
+                const manifest = {
+                    name: "Ottimizzatore Consegne - Poste",
+                    short_name: "Consegne",
+                    start_url: baseUrl,
+                    display: "standalone",
+                    background_color: "#0039A6",
+                    theme_color: "#0039A6",
+                    icons: [
+                        {
+                            src: new URL("icona-192.png", baseUrl).href,
+                            sizes: "192x192",
+                            type: "image/png",
+                            purpose: "any maskable"
+                        },
+                        {
+                            src: new URL("icona-512.png", baseUrl).href,
+                            sizes: "512x512",
+                            type: "image/png",
+                            purpose: "any maskable"
+                        }
+                    ]
+                };
+                const manifestEl = document.getElementById("pwa-manifest");
+                if (manifestEl) {
+                    manifestEl.setAttribute(
+                        "href",
+                        "data:application/manifest+json;charset=utf-8," + encodeURIComponent(JSON.stringify(manifest))
+                    );
+                }
+            } catch {
+                // Ignora in ambienti sandbox
+            }
+        })();
+    </script>
 
     <!-- Google Fonts: Inter -->
     <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -103,6 +154,19 @@
             color: #ffffff;
             border-color: #ffffff;
             opacity: 0.85;
+        }
+
+        .marker-stop.priority {
+            box-shadow: 0 0 0 3px #f59e0b, 0 4px 10px rgba(0, 0, 0, 0.35);
+        }
+
+        .dragging-row {
+            opacity: 0.72;
+            transform: scale(0.99);
+            box-shadow: 0 8px 20px rgba(0, 57, 166, 0.18);
+            border-color: #0039A6 !important;
+            background-color: #eff6ff !important;
+            z-index: 20;
         }
 
         /* Fix z-index Leaflet rispetto agli header sticky */
@@ -312,6 +376,14 @@
 
                     <div id="manual-input-panel" class="hidden space-y-2.5 pt-1">
                         <div class="flex items-center gap-1.5">
+                            <button type="button" id="btn-manual-single-priority"
+                                data-priority="false"
+                                title="Segna come consegna prioritaria"
+                                class="p-2.5 rounded-xl bg-slate-100 hover:bg-amber-50 text-slate-400 border border-slate-300 transition-colors flex-shrink-0">
+                                <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
+                                    <path stroke-linecap="round" stroke-linejoin="round" d="M11.049 2.927c.3-.921 1.603-.921 1.902 0l1.519 4.674a1 1 0 00.95.69h4.915c.969 0 1.371 1.24.588 1.81l-3.976 2.888a1 1 0 00-.363 1.118l1.518 4.674c.3.922-.755 1.688-1.538 1.118l-3.976-2.888a1 1 0 00-1.176 0l-3.976 2.888c-.783.57-1.838-.197-1.538-1.118l1.518-4.674a1 1 0 00-.363-1.118l-3.976-2.888c-.784-.57-.38-1.81.588-1.81h4.914a1 1 0 00.951-.69l1.519-4.674z" />
+                                </svg>
+                            </button>
                             <input type="text" id="input-manual-single-address" enterkeyhint="enter"
                                 class="flex-1 min-w-0 px-3.5 py-2.5 bg-slate-50 border border-slate-300 rounded-xl text-sm font-semibold text-slate-800 focus:outline-none focus:ring-2 focus:ring-posteBlue"
                                 placeholder="Scrivi un indirizzo e premi Invio...">
@@ -328,7 +400,7 @@
                         </div>
 
                         <!-- Caselle di testo dedicate create per ogni indirizzo inserito -->
-                        <div id="manual-addresses-list" class="space-y-2 max-h-60 overflow-y-auto pr-0.5"></div>
+                        <div id="manual-addresses-list" class="space-y-2 max-h-72 overflow-y-auto pr-0.5"></div>
 
                         <button type="button" id="btn-import-manual"
                             class="w-full py-3 px-4 bg-slate-800 hover:bg-slate-900 text-white font-extrabold text-xs rounded-xl transition-colors">
@@ -352,13 +424,13 @@
                 <div class="flex items-center justify-between">
                     <div>
                         <h2 class="text-base font-extrabold text-slate-800">Verifica Indirizzi Estratti</h2>
-                        <p class="text-xs text-slate-500">Controlla, modifica o aggiungi le singole tappe.</p>
+                        <p class="text-xs text-slate-500">Controlla, segna priorità (★) o modifica le tappe.</p>
                     </div>
                     <span id="badge-address-count" class="bg-posteBlue text-posteYellow text-xs font-extrabold px-2.5 py-1 rounded-full">0</span>
                 </div>
 
                 <!-- Lista Caselle di Testo Individuali (Una per Indirizzo) -->
-                <div id="step2-addresses-list" class="space-y-2.5 max-h-[52vh] overflow-y-auto pr-0.5"></div>
+                <div id="step2-addresses-list" class="space-y-2.5 max-h-[55vh] overflow-y-auto pr-0.5"></div>
 
                 <!-- Azioni Rapide Lista Indirizzi -->
                 <div class="flex items-center justify-between gap-2 pt-1">
@@ -484,7 +556,7 @@
                 <div class="p-4 border-b border-slate-100 flex items-center justify-between">
                     <div>
                         <h2 class="text-sm font-extrabold text-slate-800 uppercase tracking-wide">Sequenza Consegne</h2>
-                        <p class="text-[11px] text-slate-500">Spunta i pacchi man mano che li consegni</p>
+                        <p class="text-[11px] text-slate-500">Spunta i pacchi o riordina con frecce / trascina</p>
                     </div>
                     <button type="button" id="btn-edit-addresses-from-route"
                         class="px-2.5 py-1.5 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-xs transition-colors">
@@ -594,6 +666,22 @@
         };
 
         let lastGeocodeTimestamp = 0;
+
+        /**
+         * Normalizza ogni elemento indirizzo nel formato { address, priority }
+         */
+        function normalizeAddressItem(item) {
+            if (typeof item === "string") {
+                return { address: item, priority: false };
+            }
+            if (item && typeof item === "object") {
+                return {
+                    address: typeof item.address === "string" ? item.address : "",
+                    priority: Boolean(item.priority)
+                };
+            }
+            return { address: "", priority: false };
+        }
 
         /**
          * Utility: Escape HTML e Notifiche Toast
@@ -785,6 +873,27 @@
             const chevron = document.getElementById("icon-manual-chevron");
             const singleManualInput = document.getElementById("input-manual-single-address");
             const singleManualRomaBtn = document.getElementById("btn-manual-single-roma");
+            const singleManualPriorityBtn = document.getElementById("btn-manual-single-priority");
+
+            const setSinglePriorityVisual = (isPriority) => {
+                singleManualPriorityBtn.dataset.priority = isPriority ? "true" : "false";
+                const svg = singleManualPriorityBtn.querySelector("svg");
+                if (isPriority) {
+                    singleManualPriorityBtn.classList.remove("bg-slate-100", "text-slate-400", "border-slate-300");
+                    singleManualPriorityBtn.classList.add("bg-amber-100", "text-amber-500", "border-amber-400");
+                    svg?.setAttribute("fill", "currentColor");
+                } else {
+                    singleManualPriorityBtn.classList.add("bg-slate-100", "text-slate-400", "border-slate-300");
+                    singleManualPriorityBtn.classList.remove("bg-amber-100", "text-amber-500", "border-amber-400");
+                    svg?.setAttribute("fill", "none");
+                }
+            };
+
+            singleManualPriorityBtn.addEventListener("click", () => {
+                const nextState = singleManualPriorityBtn.dataset.priority !== "true";
+                setSinglePriorityVisual(nextState);
+                singleManualInput.focus();
+            });
 
             document.getElementById("btn-toggle-manual").addEventListener("click", () => {
                 manualPanel.classList.toggle("hidden");
@@ -819,6 +928,7 @@
 
             const addManualAddressFromBar = () => {
                 const rawVal = singleManualInput.value || "";
+                const isPriority = singleManualPriorityBtn.dataset.priority === "true";
                 const lines = rawVal
                     .split(/\r?\n/)
                     .map(l => l.trim())
@@ -829,8 +939,11 @@
                     return;
                 }
 
-                appState.manualAddresses.push(...lines);
+                lines.forEach(addr => {
+                    appState.manualAddresses.push({ address: addr, priority: isPriority });
+                });
                 singleManualInput.value = "";
+                setSinglePriorityVisual(false);
                 renderManualAddressBoxes();
                 singleManualInput.focus();
             };
@@ -849,28 +962,31 @@
             document.getElementById("btn-import-manual").addEventListener("click", () => {
                 const pendingText = singleManualInput.value.trim();
                 if (pendingText.length >= 3) {
-                    appState.manualAddresses.push(pendingText);
+                    const isPriority = singleManualPriorityBtn.dataset.priority === "true";
+                    appState.manualAddresses.push({ address: pendingText, priority: isPriority });
                     singleManualInput.value = "";
+                    setSinglePriorityVisual(false);
                     renderManualAddressBoxes();
                 }
 
-                const lines = appState.manualAddresses
-                    .map(l => l.trim())
-                    .filter(l => l.length >= 4);
+                const validItems = appState.manualAddresses
+                    .map(normalizeAddressItem)
+                    .map(item => ({ address: item.address.trim(), priority: item.priority }))
+                    .filter(item => item.address.length >= 4);
 
-                if (lines.length === 0) {
+                if (validItems.length === 0) {
                     showToast("Inserisci almeno un indirizzo valido.", "warning");
                     return;
                 }
 
-                appState.rawAddresses = lines;
+                appState.rawAddresses = validItems;
                 appState.forcedIncludeSet.clear();
                 goToStep(2);
             });
 
             // Carica Esempio Giro Roma
             document.getElementById("btn-load-example").addEventListener("click", () => {
-                appState.rawAddresses = [...EXAMPLE_ADDRESSES];
+                appState.rawAddresses = EXAMPLE_ADDRESSES.map(normalizeAddressItem);
                 appState.forcedIncludeSet.clear();
                 showToast("Caricati 12 indirizzi di esempio", "success");
                 goToStep(2);
@@ -888,7 +1004,99 @@
         }
 
         /**
+         * Abilita riordino tramite trascinamento (Mouse Drag & Drop + Touch su smartphone)
+         */
+        function enableListDragAndDrop(listContainer, getItemsArray, onReordered) {
+            let draggedElement = null;
+
+            const syncOrderFromDOM = () => {
+                const currentItems = getItemsArray();
+                const rows = Array.from(listContainer.querySelectorAll("[data-item-idx]"));
+                const newOrdered = rows.map(r => currentItems[parseInt(r.dataset.itemIdx, 10)]);
+                currentItems.splice(0, currentItems.length, ...newOrdered);
+                onReordered();
+            };
+
+            // 1. Desktop / Mouse HTML5 Drag & Drop
+            listContainer.querySelectorAll("[data-item-idx]").forEach(row => {
+                const handle = row.querySelector(".drag-handle");
+                if (handle) {
+                    handle.addEventListener("mousedown", () => row.setAttribute("draggable", "true"));
+                    handle.addEventListener("mouseup", () => row.removeAttribute("draggable"));
+                }
+
+                row.addEventListener("dragstart", (e) => {
+                    draggedElement = row;
+                    row.classList.add("dragging-row");
+                    if (e.dataTransfer) {
+                        e.dataTransfer.effectAllowed = "move";
+                        e.dataTransfer.setData("text/plain", row.dataset.itemIdx);
+                    }
+                });
+
+                row.addEventListener("dragover", (e) => {
+                    e.preventDefault();
+                    if (!draggedElement || draggedElement === row) return;
+                    const rect = row.getBoundingClientRect();
+                    const insertAfter = (e.clientY - rect.top) > rect.height / 2;
+                    if (insertAfter) {
+                        listContainer.insertBefore(draggedElement, row.nextSibling);
+                    } else {
+                        listContainer.insertBefore(draggedElement, row);
+                    }
+                });
+
+                row.addEventListener("dragend", () => {
+                    if (!draggedElement) return;
+                    draggedElement.classList.remove("dragging-row");
+                    draggedElement.removeAttribute("draggable");
+                    draggedElement = null;
+                    syncOrderFromDOM();
+                });
+
+                // 2. Touch Drag & Drop su Smartphone tramite maniglia
+                if (handle) {
+                    handle.addEventListener("touchstart", (e) => {
+                        if (e.touches.length !== 1) return;
+                        e.preventDefault();
+                        draggedElement = row;
+                        row.classList.add("dragging-row");
+                    }, { passive: false });
+
+                    handle.addEventListener("touchmove", (e) => {
+                        if (!draggedElement) return;
+                        e.preventDefault();
+                        const touchY = e.touches[0].clientY;
+                        const siblings = Array.from(listContainer.querySelectorAll("[data-item-idx]"))
+                            .filter(el => el !== draggedElement);
+
+                        for (const targetRow of siblings) {
+                            const rect = targetRow.getBoundingClientRect();
+                            if (touchY >= rect.top && touchY <= rect.bottom) {
+                                const insertAfter = (touchY - rect.top) > rect.height / 2;
+                                if (insertAfter) {
+                                    listContainer.insertBefore(draggedElement, targetRow.nextSibling);
+                                } else {
+                                    listContainer.insertBefore(draggedElement, targetRow);
+                                }
+                                break;
+                            }
+                        }
+                    }, { passive: false });
+
+                    handle.addEventListener("touchend", () => {
+                        if (!draggedElement) return;
+                        draggedElement.classList.remove("dragging-row");
+                        draggedElement = null;
+                        syncOrderFromDOM();
+                    });
+                }
+            });
+        }
+
+        /**
          * Renderizza una casella di testo dedicata per ogni indirizzo inserito manualmente nello Step 1
+         * (con Stella di Priorità ★, senza riordino manuale)
          */
         function renderManualAddressBoxes() {
             const listContainer = document.getElementById("manual-addresses-list");
@@ -896,18 +1104,32 @@
 
             listContainer.innerHTML = "";
 
-            appState.manualAddresses.forEach((addr, index) => {
+            appState.manualAddresses.forEach((rawItem, index) => {
+                const item = normalizeAddressItem(rawItem);
+                appState.manualAddresses[index] = item;
+                const isPriority = Boolean(item.priority);
+
                 const row = document.createElement("div");
-                row.className = "flex items-center gap-1.5";
+                row.className = `flex items-center gap-1.5 p-1.5 rounded-2xl border transition-colors ${
+                    isPriority ? "bg-amber-50/70 border-amber-300" : "bg-slate-50 border-slate-200"
+                }`;
                 row.innerHTML = `
-                    <span class="w-6 h-6 rounded-full bg-blue-100 text-posteBlue text-xs font-extrabold flex items-center justify-center flex-shrink-0">
+                    <span class="w-6 h-6 rounded-full ${isPriority ? "bg-amber-400 text-slate-950" : "bg-blue-100 text-posteBlue"} text-xs font-extrabold flex items-center justify-center flex-shrink-0">
                         ${index + 1}
                     </span>
+                    <button type="button"
+                        data-manual-priority-idx="${index}"
+                        title="${isPriority ? "Rimuovi priorità" : "Segna come prioritario"}"
+                        class="p-2 rounded-xl ${isPriority ? "bg-amber-100 text-amber-500 border border-amber-300" : "bg-white text-slate-400 hover:text-amber-500 border border-slate-200"} transition-colors flex-shrink-0">
+                        <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" viewBox="0 0 24 24" fill="${isPriority ? "currentColor" : "none"}" stroke="currentColor" stroke-width="2.2">
+                            <path stroke-linecap="round" stroke-linejoin="round" d="M11.049 2.927c.3-.921 1.603-.921 1.902 0l1.519 4.674a1 1 0 00.95.69h4.915c.969 0 1.371 1.24.588 1.81l-3.976 2.888a1 1 0 00-.363 1.118l1.518 4.674c.3.922-.755 1.688-1.538 1.118l-3.976-2.888a1 1 0 00-1.176 0l-3.976 2.888c-.783.57-1.838-.197-1.538-1.118l1.518-4.674a1 1 0 00-.363-1.118l-3.976-2.888c-.784-.57-.38-1.81.588-1.81h4.914a1 1 0 00.951-.69l1.519-4.674z" />
+                        </svg>
+                    </button>
                     <input type="text"
-                        value="${escapeHtml(addr)}"
+                        value="${escapeHtml(item.address)}"
                         data-manual-idx="${index}"
                         placeholder="Es. Via Cornelia 164, Roma"
-                        class="manual-addr-item-input flex-1 min-w-0 px-3 py-2 bg-slate-50 border border-slate-300 rounded-xl text-sm font-semibold text-slate-800 focus:outline-none focus:ring-2 focus:ring-posteBlue">
+                        class="manual-addr-item-input flex-1 min-w-0 px-3 py-2 bg-white border border-slate-300 rounded-xl text-sm font-semibold text-slate-800 focus:outline-none focus:ring-2 focus:ring-posteBlue">
                     <button type="button"
                         data-manual-roma-idx="${index}"
                         title='Aggiungi ", Roma"'
@@ -932,7 +1154,7 @@
 
                 input.addEventListener("input", (e) => {
                     const idx = parseInt(e.target.dataset.manualIdx, 10);
-                    appState.manualAddresses[idx] = e.target.value;
+                    appState.manualAddresses[idx].address = e.target.value;
                 });
 
                 if (romaBtn) {
@@ -948,20 +1170,26 @@
                         }, 180);
                     });
 
-                    romaBtn.addEventListener("mousedown", (e) => {
-                        e.preventDefault();
-                    });
+                    romaBtn.addEventListener("mousedown", (e) => e.preventDefault());
 
                     romaBtn.addEventListener("click", () => {
                         const idx = parseInt(input.dataset.manualIdx, 10);
                         const updated = appendRomaToText(input.value);
                         input.value = updated;
-                        appState.manualAddresses[idx] = updated;
+                        appState.manualAddresses[idx].address = updated;
                         input.focus();
                         const len = updated.length;
                         input.setSelectionRange(len, len);
                     });
                 }
+            });
+
+            listContainer.querySelectorAll("button[data-manual-priority-idx]").forEach(btn => {
+                btn.addEventListener("click", (e) => {
+                    const idx = parseInt(e.currentTarget.dataset.manualPriorityIdx, 10);
+                    appState.manualAddresses[idx].priority = !appState.manualAddresses[idx].priority;
+                    renderManualAddressBoxes();
+                });
             });
 
             listContainer.querySelectorAll("button[data-manual-remove-idx]").forEach(btn => {
@@ -1023,7 +1251,6 @@
             const extracted = [];
 
             for (let i = 0; i < rawLines.length; i++) {
-                // Rimuove simboli spuri iniziali dovuti alle icone circolari di Maps (es. "© ", "O ", "@ ", "(1) ")
                 let clean = rawLines[i]
                     .replace(/^[^a-zA-Z0-9]+/, "")
                     .replace(/^[OQ0C@©®\(\)\[\]]+\s+(?=(via|viale|piazza|piazzale|largo|corso|vicolo|strada)\b)/i, "")
@@ -1031,16 +1258,14 @@
                     .trim();
 
                 if (clean.length < 5 || ignoreLineRegex.test(clean)) continue;
-                if (/^\d{1,2}:\d{2}$/.test(clean)) continue; // Orario telefono in alto
+                if (/^\d{1,2}:\d{2}$/.test(clean)) continue;
 
                 if (streetPrefixes.test(clean)) {
-                    // Taglia eventuali caratteri residui prima del prefisso stradale
                     const match = clean.match(streetPrefixes);
                     if (match && match.index > 0 && match.index <= 4) {
                         clean = clean.slice(match.index).trim();
                     }
 
-                    // Controlla se la riga successiva indica il comune (es. "Santa Marinella, RM")
                     let citySuffix = "Roma";
                     if (i + 1 < rawLines.length) {
                         const nextClean = rawLines[i + 1].replace(/^[^a-zA-Z]+/, "").trim();
@@ -1051,7 +1276,6 @@
                         }
                     }
 
-                    // Evita duplicati di città se già presente nella riga
                     if (!/,\s*(roma|santa marinella|fiumicino|guidonia|tivoli|pomezia|ciampino|rm)\b/i.test(clean)) {
                         clean = `${clean}, ${citySuffix}`;
                     }
@@ -1108,10 +1332,10 @@
 
                 if (detected.length === 0) {
                     showToast("Nessun indirizzo chiaro rilevato. Controlla o inserisci manualmente.", "warning");
-                    appState.rawAddresses = [""];
+                    appState.rawAddresses = [{ address: "", priority: false }];
                 } else {
                     showToast(`Estratti ${detected.length} indirizzi dalla foto!`, "success");
-                    appState.rawAddresses = detected;
+                    appState.rawAddresses = detected.map(normalizeAddressItem);
                 }
 
                 appState.forcedIncludeSet.clear();
@@ -1132,20 +1356,21 @@
          */
         function initStep2Controls() {
             document.getElementById("btn-add-address-row").addEventListener("click", () => {
-                appState.rawAddresses.push("");
+                appState.rawAddresses.push({ address: "", priority: false });
                 renderStep2AddressInputs();
-                const inputs = document.querySelectorAll("#step2-addresses-list input");
+                const inputs = document.querySelectorAll("#step2-addresses-list .step2-addr-input");
                 if (inputs.length > 0) {
                     inputs[inputs.length - 1].focus();
                 }
             });
 
             document.getElementById("btn-append-roma").addEventListener("click", () => {
-                appState.rawAddresses = appState.rawAddresses.map(addr => {
-                    const trimmed = addr.trim();
-                    if (!trimmed) return "";
-                    if (/,\s*[a-zA-Zàèéìòù\s]+$/.test(trimmed)) return trimmed;
-                    return `${trimmed}, Roma`;
+                appState.rawAddresses = appState.rawAddresses.map(raw => {
+                    const item = normalizeAddressItem(raw);
+                    const trimmed = item.address.trim();
+                    if (!trimmed) return { address: "", priority: item.priority };
+                    if (/,\s*[a-zA-Zàèéìòù\s]+$/.test(trimmed)) return { address: trimmed, priority: item.priority };
+                    return { address: `${trimmed}, Roma`, priority: item.priority };
                 });
                 renderStep2AddressInputs();
                 showToast('Aggiunto ", Roma" agli indirizzi senza comune', "info");
@@ -1153,8 +1378,9 @@
 
             document.getElementById("btn-calculate-route").addEventListener("click", () => {
                 const cleaned = appState.rawAddresses
-                    .map(a => a.trim())
-                    .filter(a => a.length >= 4);
+                    .map(normalizeAddressItem)
+                    .map(item => ({ address: item.address.trim(), priority: item.priority }))
+                    .filter(item => item.address.length >= 4);
 
                 if (cleaned.length === 0) {
                     showToast("Inserisci almeno un indirizzo di consegna.", "warning");
@@ -1176,41 +1402,96 @@
             if (!listContainer) return;
 
             if (appState.rawAddresses.length === 0) {
-                appState.rawAddresses = [""];
+                appState.rawAddresses = [{ address: "", priority: false }];
             }
 
-            listContainer.innerHTML = "";
-            countBadge.textContent = appState.rawAddresses.filter(a => a.trim().length > 0).length;
+            appState.rawAddresses = appState.rawAddresses.map(normalizeAddressItem);
 
-            appState.rawAddresses.forEach((addr, index) => {
+            const updateCountBadge = () => {
+                countBadge.textContent = appState.rawAddresses.filter(a => a.address.trim().length > 0).length;
+            };
+
+            listContainer.innerHTML = "";
+            updateCountBadge();
+
+            appState.rawAddresses.forEach((item, index) => {
+                const isPriority = Boolean(item.priority);
                 const row = document.createElement("div");
-                row.className = "flex items-center gap-2";
+                row.className = `flex items-center gap-1.5 p-1.5 rounded-2xl border transition-colors ${
+                    isPriority ? "bg-amber-50/70 border-amber-300" : "bg-slate-50 border-slate-200"
+                }`;
                 row.innerHTML = `
-                    <span class="w-6 h-6 rounded-full bg-blue-100 text-posteBlue text-xs font-extrabold flex items-center justify-center flex-shrink-0">
+                    <span class="w-6 h-6 rounded-full ${isPriority ? "bg-amber-400 text-slate-950" : "bg-blue-100 text-posteBlue"} text-xs font-extrabold flex items-center justify-center flex-shrink-0">
                         ${index + 1}
                     </span>
+                    <button type="button"
+                        data-step2-priority-idx="${index}"
+                        title="${isPriority ? "Rimuovi priorità" : "Segna come prioritario"}"
+                        class="p-2 rounded-xl ${isPriority ? "bg-amber-100 text-amber-500 border border-amber-300" : "bg-white text-slate-400 hover:text-amber-500 border border-slate-200"} transition-colors flex-shrink-0">
+                        <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" viewBox="0 0 24 24" fill="${isPriority ? "currentColor" : "none"}" stroke="currentColor" stroke-width="2.2">
+                            <path stroke-linecap="round" stroke-linejoin="round" d="M11.049 2.927c.3-.921 1.603-.921 1.902 0l1.519 4.674a1 1 0 00.95.69h4.915c.969 0 1.371 1.24.588 1.81l-3.976 2.888a1 1 0 00-.363 1.118l1.518 4.674c.3.922-.755 1.688-1.538 1.118l-3.976-2.888a1 1 0 00-1.176 0l-3.976 2.888c-.783.57-1.838-.197-1.538-1.118l1.518-4.674a1 1 0 00-.363-1.118l-3.976-2.888c-.784-.57-.38-1.81.588-1.81h4.914a1 1 0 00.951-.69l1.519-4.674z" />
+                        </svg>
+                    </button>
                     <input type="text"
-                        value="${escapeHtml(addr)}"
+                        value="${escapeHtml(item.address)}"
                         data-addr-idx="${index}"
                         placeholder="Es. Via Cornelia 164, Roma"
-                        class="step2-addr-input flex-1 px-3 py-2.5 bg-slate-50 border border-slate-300 rounded-xl text-sm font-semibold text-slate-800 focus:outline-none focus:ring-2 focus:ring-posteBlue">
+                        class="step2-addr-input flex-1 min-w-0 px-3 py-2 bg-white border border-slate-300 rounded-xl text-sm font-semibold text-slate-800 focus:outline-none focus:ring-2 focus:ring-posteBlue">
+                    <button type="button"
+                        data-step2-roma-idx="${index}"
+                        title='Aggiungi ", Roma"'
+                        class="step2-row-roma-btn hidden px-2 py-2 bg-blue-50 hover:bg-blue-100 active:bg-blue-200 text-posteBlue border border-posteBlue/25 font-extrabold text-[11px] rounded-xl transition-all flex-shrink-0">
+                        + , Roma
+                    </button>
                     <button type="button"
                         data-remove-idx="${index}"
                         title="Rimuovi indirizzo"
-                        class="p-2.5 rounded-xl bg-red-50 hover:bg-red-100 text-red-600 transition-colors flex-shrink-0">
+                        class="p-2 rounded-xl bg-red-50 hover:bg-red-100 text-red-600 transition-colors flex-shrink-0">
                         <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.2">
                             <path stroke-linecap="round" stroke-linejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
                         </svg>
                     </button>
                 `;
                 listContainer.appendChild(row);
-            });
 
-            listContainer.querySelectorAll(".step2-addr-input").forEach(input => {
+                const input = row.querySelector(".step2-addr-input");
+                const romaBtn = row.querySelector(".step2-row-roma-btn");
+
                 input.addEventListener("input", (e) => {
                     const idx = parseInt(e.target.dataset.addrIdx, 10);
-                    appState.rawAddresses[idx] = e.target.value;
-                    countBadge.textContent = appState.rawAddresses.filter(a => a.trim().length > 0).length;
+                    appState.rawAddresses[idx].address = e.target.value;
+                    updateCountBadge();
+                });
+
+                input.addEventListener("focus", () => {
+                    romaBtn?.classList.remove("hidden");
+                });
+
+                input.addEventListener("blur", () => {
+                    setTimeout(() => {
+                        if (document.activeElement !== input) {
+                            romaBtn?.classList.add("hidden");
+                        }
+                    }, 180);
+                });
+
+                romaBtn?.addEventListener("mousedown", (e) => e.preventDefault());
+                romaBtn?.addEventListener("click", () => {
+                    const updated = appendRomaToText(input.value);
+                    input.value = updated;
+                    appState.rawAddresses[index].address = updated;
+                    input.focus();
+                    const len = updated.length;
+                    input.setSelectionRange(len, len);
+                    updateCountBadge();
+                });
+            });
+
+            listContainer.querySelectorAll("button[data-step2-priority-idx]").forEach(btn => {
+                btn.addEventListener("click", (e) => {
+                    const idx = parseInt(e.currentTarget.dataset.step2PriorityIdx, 10);
+                    appState.rawAddresses[idx].priority = !appState.rawAddresses[idx].priority;
+                    renderStep2AddressInputs();
                 });
             });
 
@@ -1295,10 +1576,8 @@
 
             let geo = null;
             try {
-                // 1. Ricerca esatta su Nominatim
                 geo = await queryNominatimSingle(queryWithRoma);
 
-                // 2. Fallback senza numero civico (es. "Via Cornelia, Roma")
                 if (!geo) {
                     const withoutCivic = queryWithRoma.replace(/,?\s*\d+[a-zA-Z]?\b/, "").trim();
                     if (withoutCivic !== queryWithRoma) {
@@ -1306,7 +1585,6 @@
                     }
                 }
 
-                // 3. Fallback su Photon Komoot
                 if (!geo) {
                     geo = await queryPhotonSingle(queryWithRoma);
                 }
@@ -1346,9 +1624,6 @@
             }
         }
 
-        /**
-         * Costruisce la matrice di fallback in secondi stimati (Haversine * 1.35 a 26 km/h)
-         */
         function buildFallbackDurationMatrix(allNodes) {
             const n = allNodes.length;
             const matrix = Array.from({ length: n }, () => Array(n).fill(0));
@@ -1362,9 +1637,6 @@
             return matrix;
         }
 
-        /**
-         * Interroga OSRM Table API per ottenere i tempi reali di guida (in secondi) tra tutti i punti
-         */
         async function fetchOSRMDurationMatrix(allNodes) {
             const coordsParam = allNodes.map(n => `${n.lon.toFixed(6)},${n.lat.toFixed(6)}`).join(";");
             const url = `https://router.project-osrm.org/table/v1/driving/${coordsParam}?annotations=duration`;
@@ -1381,20 +1653,15 @@
 
             const fallback = buildFallbackDurationMatrix(allNodes);
             const n = allNodes.length;
-            const sanitizedMatrix = Array.from({ length: n }, (_, i) =>
+            return Array.from({ length: n }, (_, i) =>
                 Array.from({ length: n }, (_, j) => {
                     if (i === j) return 0;
                     const val = data.durations[i]?.[j];
                     return (typeof val === "number" && Number.isFinite(val) && val > 0) ? val : fallback[i][j];
                 })
             );
-
-            return sanitizedMatrix;
         }
 
-        /**
-         * Calcola il costo totale (in secondi) di una sequenza di indici sulla matrice asimmetrica
-         */
         function computeTotalRouteCost(route, costMatrix) {
             let total = 0;
             for (let i = 0; i < route.length - 1; i++) {
@@ -1405,7 +1672,7 @@
 
         /**
          * Ottimizzatore TSP Asimmetrico (Nearest Neighbor + 2-Opt Asimmetrico + Or-Opt)
-         * Partenza (indice 0) e Arrivo (indice n-1) restano fissi.
+         * Le tappe con stella di priorità (priority: true) vengono consegnate per prime in ordine ottimale.
          */
         function solveTSPWithCostMatrix(allNodes, costMatrix) {
             const n = allNodes.length;
@@ -1413,38 +1680,55 @@
                 return n === 2 ? [0, 1] : [0];
             }
 
-            // 1. Costruzione iniziale Nearest Neighbor basata sul minor tempo di guida
-            const route = [0];
-            const unvisited = new Set();
+            const priorityIndices = [];
+            const regularIndices = [];
             for (let i = 1; i < n - 1; i++) {
-                unvisited.add(i);
+                if (allNodes[i].priority) {
+                    priorityIndices.push(i);
+                } else {
+                    regularIndices.push(i);
+                }
             }
 
+            const route = [0];
             let current = 0;
-            while (unvisited.size > 0) {
-                let bestNext = -1;
-                let bestCost = Infinity;
-                for (const candidate of unvisited) {
-                    const cost = costMatrix[current][candidate];
-                    if (cost < bestCost) {
-                        bestCost = cost;
-                        bestNext = candidate;
+
+            const appendGroupNearestNeighbor = (indicesGroup) => {
+                const unvisited = new Set(indicesGroup);
+                while (unvisited.size > 0) {
+                    let bestNext = -1;
+                    let bestCost = Infinity;
+                    for (const candidate of unvisited) {
+                        const cost = costMatrix[current][candidate];
+                        if (cost < bestCost) {
+                            bestCost = cost;
+                            bestNext = candidate;
+                        }
                     }
+                    route.push(bestNext);
+                    unvisited.delete(bestNext);
+                    current = bestNext;
                 }
-                route.push(bestNext);
-                unvisited.delete(bestNext);
-                current = bestNext;
-            }
+            };
+
+            appendGroupNearestNeighbor(priorityIndices);
+            appendGroupNearestNeighbor(regularIndices);
             route.push(n - 1);
 
-            // 2. Raffinamento combinato 2-Opt Asimmetrico + Or-Opt (spostamento singola tappa)
+            const priorityBoundary = priorityIndices.length;
+            const isValidGroupBoundary = (candidateRoute) => {
+                for (let idx = 1; idx <= priorityBoundary; idx++) {
+                    if (!allNodes[candidateRoute[idx]].priority) return false;
+                }
+                return true;
+            };
+
             let bestTotalCost = computeTotalRouteCost(route, costMatrix);
             let improved = true;
 
             while (improved) {
                 improved = false;
 
-                // Passo 2-Opt: inversione sotto-tratte (valutata sull'intera matrice asimmetrica)
                 for (let i = 1; i < route.length - 2; i++) {
                     for (let k = i + 1; k < route.length - 1; k++) {
                         const candidate = [
@@ -1452,6 +1736,7 @@
                             ...route.slice(i, k + 1).reverse(),
                             ...route.slice(k + 1)
                         ];
+                        if (!isValidGroupBoundary(candidate)) continue;
                         const candidateCost = computeTotalRouteCost(candidate, costMatrix);
                         if (candidateCost + 0.5 < bestTotalCost) {
                             route.splice(0, route.length, ...candidate);
@@ -1461,7 +1746,6 @@
                     }
                 }
 
-                // Passo Or-Opt: sposta una singola tappa in una posizione migliore lungo il percorso
                 for (let i = 1; i < route.length - 1; i++) {
                     const node = route[i];
                     const withoutNode = [...route.slice(0, i), ...route.slice(i + 1)];
@@ -1472,6 +1756,7 @@
                             node,
                             ...withoutNode.slice(j)
                         ];
+                        if (!isValidGroupBoundary(candidate)) continue;
                         const candidateCost = computeTotalRouteCost(candidate, costMatrix);
                         if (candidateCost + 0.5 < bestTotalCost) {
                             route.splice(0, route.length, ...candidate);
@@ -1487,9 +1772,6 @@
             return route;
         }
 
-        /**
-         * Scarica la geometria stradale reale (GeoJSON) e i totali reali da OSRM Route API
-         */
         async function fetchOSRMRouteGeometry(orderedNodes) {
             const coordsParam = orderedNodes.map(n => `${n.lon.toFixed(6)},${n.lat.toFixed(6)}`).join(";");
             const url = `https://router.project-osrm.org/route/v1/driving/${coordsParam}?overview=full&geometries=geojson`;
@@ -1505,7 +1787,6 @@
                 throw new Error("Geometria stradale OSRM non disponibile");
             }
 
-            // Conversione da [lon, lat] (GeoJSON) a [lat, lon] (Leaflet)
             const latLngs = bestRoute.geometry.coordinates.map(([lon, lat]) => [lat, lon]);
             return {
                 latLngs,
@@ -1556,7 +1837,8 @@
                 const notFound = [];
 
                 for (let i = 0; i < totalStops; i++) {
-                    const addr = appState.rawAddresses[i];
+                    const item = normalizeAddressItem(appState.rawAddresses[i]);
+                    const addr = item.address;
                     const pct = 15 + Math.round(((i + 1) / totalStops) * 60);
                     updateCalcUI(pct, "Ricerca indirizzi sulla mappa...", `${i + 1}/${totalStops}: ${addr}`);
 
@@ -1572,6 +1854,7 @@
                     if (distFromStartKm > ANOMALY_DISTANCE_KM && !isForced) {
                         anomalies.push({
                             address: addr,
+                            priority: item.priority,
                             lat: geo.lat,
                             lon: geo.lon,
                             distanceKm: Math.round(distFromStartKm)
@@ -1579,6 +1862,7 @@
                     } else {
                         validStops.push({
                             address: addr,
+                            priority: item.priority,
                             lat: geo.lat,
                             lon: geo.lon,
                             distanceKm: Math.round(distFromStartKm),
@@ -1594,9 +1878,9 @@
                 }
 
                 const allNodes = [
-                    { type: "start", address: startAddress, lat: startGeo.lat, lon: startGeo.lon },
+                    { type: "start", address: startAddress, priority: false, lat: startGeo.lat, lon: startGeo.lon },
                     ...validStops.map(s => ({ type: "stop", ...s })),
-                    { type: "end", address: endAddress, lat: endGeo.lat, lon: endGeo.lon }
+                    { type: "end", address: endAddress, priority: false, lat: endGeo.lat, lon: endGeo.lon }
                 ];
 
                 updateCalcUI(82, "Calcolo tempi reali su strada...", "Analisi sensi unici e viabilità (OSRM)");
@@ -1645,6 +1929,7 @@
                         id: `stop_${idx}_${stop.address}`,
                         order: idx + 1,
                         address: stop.address,
+                        priority: Boolean(stop.priority),
                         lat: stop.lat,
                         lon: stop.lon,
                         wasAnomaly: Boolean(stop.wasAnomaly),
@@ -1696,8 +1981,8 @@
                 if (parsed && Array.isArray(parsed.stops) && parsed.stops.length > 0) {
                     appState.activeRoute = parsed;
                     appState.rawAddresses = [
-                        ...parsed.stops.map(s => s.address),
-                        ...(parsed.anomalies || []).map(a => a.address)
+                        ...parsed.stops.map(s => ({ address: s.address, priority: Boolean(s.priority) })),
+                        ...(parsed.anomalies || []).map(a => ({ address: a.address, priority: Boolean(a.priority) }))
                     ];
                     return true;
                 }
@@ -1724,7 +2009,7 @@
         function buildGoogleMapsPhases(routeData) {
             const fullSequence = [routeData.start, ...routeData.stops, routeData.end];
             const phases = [];
-            const MAX_POINTS_PER_LINK = 10; // Limite massimo supportato da Google Maps URL
+            const MAX_POINTS_PER_LINK = 10;
             const STEP_SIZE = MAX_POINTS_PER_LINK - 1;
 
             for (let i = 0; i < fullSequence.length - 1; i += STEP_SIZE) {
@@ -1846,44 +2131,133 @@
             renderInteractiveMap(data, true);
         }
 
+        /**
+         * Aggiorna numerazione, link Google Maps, mappa e tracciato stradale dopo un riordino manuale nello Step 4
+         */
+        async function applyManualRouteReorder(newOrderedStops) {
+            const data = appState.activeRoute;
+            if (!data) return;
+
+            data.stops = newOrderedStops.map((stop, idx) => ({
+                ...stop,
+                order: idx + 1
+            }));
+
+            const fullNodes = [data.start, ...data.stops, data.end];
+            data.latLngs = fullNodes.map(n => [n.lat, n.lon]);
+            data.isRoadGeometry = false;
+
+            let estDistanceMeters = 0;
+            for (let i = 0; i < fullNodes.length - 1; i++) {
+                estDistanceMeters += Math.round(
+                    haversineKm(fullNodes[i].lat, fullNodes[i].lon, fullNodes[i + 1].lat, fullNodes[i + 1].lon) * 1000 * 1.35
+                );
+            }
+            data.totalDistanceMeters = estDistanceMeters;
+            data.totalDurationSec = Math.round(((estDistanceMeters / 1000) / 26) * 3600);
+
+            saveActiveShiftToStorage();
+            renderStep4Dashboard();
+            showToast("Ordine tappe aggiornato", "info");
+
+            try {
+                const roadGeom = await fetchOSRMRouteGeometry(fullNodes);
+                if (appState.activeRoute === data) {
+                    data.latLngs = roadGeom.latLngs;
+                    data.totalDurationSec = roadGeom.durationSec;
+                    data.totalDistanceMeters = roadGeom.distanceMeters;
+                    data.isRoadGeometry = true;
+                    saveActiveShiftToStorage();
+                    document.getElementById("stat-duration").textContent = formatDuration(data.totalDurationSec);
+                    document.getElementById("stat-distance").textContent = formatDistance(data.totalDistanceMeters);
+                    renderInteractiveMap(data, false);
+                }
+            } catch {
+                // Mantiene il tracciato aggiornato offline
+            }
+        }
+
         function renderDeliveryChecklist(data, stopToPhaseMap) {
             const container = document.getElementById("delivery-checklist-container");
             container.innerHTML = "";
 
-            container.innerHTML += `
-                <div class="p-3.5 bg-blue-50/50 flex items-center gap-3">
-                    <div class="w-8 h-8 rounded-full bg-posteBlue text-posteYellow font-extrabold text-xs flex items-center justify-center flex-shrink-0">P</div>
-                    <div class="flex-1 min-w-0">
-                        <span class="text-[10px] font-extrabold uppercase text-posteBlue">Partenza</span>
-                        <p class="text-xs font-bold text-slate-800 truncate">${escapeHtml(data.start.address)}</p>
-                    </div>
+            const startBanner = document.createElement("div");
+            startBanner.className = "p-3.5 bg-blue-50/50 flex items-center gap-3";
+            startBanner.innerHTML = `
+                <div class="w-8 h-8 rounded-full bg-posteBlue text-posteYellow font-extrabold text-xs flex items-center justify-center flex-shrink-0">P</div>
+                <div class="flex-1 min-w-0">
+                    <span class="text-[10px] font-extrabold uppercase text-posteBlue">Partenza</span>
+                    <p class="text-xs font-bold text-slate-800 truncate">${escapeHtml(data.start.address)}</p>
                 </div>
             `;
+            container.appendChild(startBanner);
+
+            const sortableStopsWrapper = document.createElement("div");
+            sortableStopsWrapper.className = "divide-y divide-slate-100";
+            container.appendChild(sortableStopsWrapper);
+
+            const totalStops = data.stops.length;
 
             data.stops.forEach((stop, index) => {
                 const phaseNum = stopToPhaseMap[stop.order] || 1;
                 const singleNavUrl = `https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(stop.address)}&travelmode=driving`;
+                const isFirst = index === 0;
+                const isLast = index === totalStops - 1;
 
                 const row = document.createElement("div");
-                row.className = `p-3.5 flex items-center gap-3 transition-colors ${stop.completed ? "bg-slate-50/90" : "bg-white hover:bg-slate-50/60"}`;
+                row.dataset.itemIdx = String(index);
+                row.className = `p-3 flex items-center gap-2 transition-colors ${stop.completed ? "bg-slate-50/90" : "bg-white hover:bg-slate-50/60"}`;
                 row.innerHTML = `
-                    <label class="flex items-center gap-3 flex-1 min-w-0 cursor-pointer select-none py-0.5">
+                    <button type="button"
+                        class="drag-handle touch-none cursor-grab active:cursor-grabbing p-1.5 text-slate-400 hover:text-posteBlue rounded-lg flex-shrink-0"
+                        title="Trascina per riordinare la tappa">
+                        <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="currentColor" viewBox="0 0 20 20">
+                            <path d="M7 4a1.5 1.5 0 11-3 0 1.5 1.5 0 013 0zm0 6a1.5 1.5 0 11-3 0 1.5 1.5 0 013 0zm0 6a1.5 1.5 0 11-3 0 1.5 1.5 0 013 0zm9-12a1.5 1.5 0 11-3 0 1.5 1.5 0 013 0zm0 6a1.5 1.5 0 11-3 0 1.5 1.5 0 013 0zm0 6a1.5 1.5 0 11-3 0 1.5 1.5 0 013 0z" />
+                        </svg>
+                    </button>
+
+                    <label class="flex items-center gap-2.5 flex-1 min-w-0 cursor-pointer select-none py-0.5">
                         <input type="checkbox" class="delivery-checkbox hidden" data-stop-index="${index}" ${stop.completed ? "checked" : ""}>
                         <div class="custom-check-box w-7 h-7 rounded-xl border-2 ${stop.completed ? "bg-green-600 border-green-600" : "border-slate-300 bg-white"} flex items-center justify-center flex-shrink-0 transition-colors">
                             <svg class="check-icon ${stop.completed ? "block" : "hidden"} w-4 h-4 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M5 13l4 4L19 7"></path>
                             </svg>
                         </div>
-                        <div class="stop-badge w-6 h-6 rounded-full ${stop.completed ? "bg-slate-200 text-slate-500" : "bg-posteBlue text-white"} font-extrabold text-xs flex items-center justify-center flex-shrink-0">
+                        <div class="stop-badge w-6 h-6 rounded-full ${stop.completed ? "bg-slate-200 text-slate-500" : (stop.priority ? "bg-amber-400 text-slate-950" : "bg-posteBlue text-white")} font-extrabold text-xs flex items-center justify-center flex-shrink-0">
                             ${stop.order}
                         </div>
                         <div class="flex-1 min-w-0">
                             <p class="stop-title text-sm font-bold leading-snug break-words ${stop.completed ? "line-through text-slate-400" : "text-slate-800"}">${escapeHtml(stop.address)}</p>
-                            <div class="flex items-center gap-2 mt-0.5">
+                            <div class="flex items-center gap-1.5 mt-0.5 flex-wrap">
                                 <span class="text-[10px] font-bold px-1.5 py-0.5 rounded bg-slate-100 text-slate-500">Fase ${phaseNum}</span>
+                                ${stop.priority ? `<span class="text-[10px] font-extrabold px-1.5 py-0.5 rounded bg-amber-100 text-amber-800">★ Priorità</span>` : ""}
                             </div>
                         </div>
                     </label>
+
+                    <div class="flex flex-col gap-1 flex-shrink-0">
+                        <button type="button"
+                            data-move-stop="up"
+                            data-stop-index="${index}"
+                            ${isFirst ? "disabled" : ""}
+                            title="Anticipa tappa"
+                            class="p-1 rounded-lg bg-slate-100 hover:bg-blue-100 text-slate-600 hover:text-posteBlue disabled:opacity-30 disabled:pointer-events-none transition-colors">
+                            <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5">
+                                <path stroke-linecap="round" stroke-linejoin="round" d="M5 15l7-7 7 7" />
+                            </svg>
+                        </button>
+                        <button type="button"
+                            data-move-stop="down"
+                            data-stop-index="${index}"
+                            ${isLast ? "disabled" : ""}
+                            title="Posticipa tappa"
+                            class="p-1 rounded-lg bg-slate-100 hover:bg-blue-100 text-slate-600 hover:text-posteBlue disabled:opacity-30 disabled:pointer-events-none transition-colors">
+                            <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5">
+                                <path stroke-linecap="round" stroke-linejoin="round" d="M19 9l-7 7-7-7" />
+                            </svg>
+                        </button>
+                    </div>
+
                     <a href="${singleNavUrl}" target="_blank" rel="noopener noreferrer"
                         class="p-2.5 rounded-xl bg-slate-100 hover:bg-posteYellow text-posteBlue transition-colors flex-shrink-0"
                         title="Naviga solo a questo indirizzo">
@@ -1893,20 +2267,47 @@
                         </svg>
                     </a>
                 `;
-                container.appendChild(row);
+                sortableStopsWrapper.appendChild(row);
             });
 
-            container.innerHTML += `
-                <div class="p-3.5 bg-slate-100/70 flex items-center gap-3">
-                    <div class="w-8 h-8 rounded-full bg-slate-800 text-white font-extrabold text-xs flex items-center justify-center flex-shrink-0">A</div>
-                    <div class="flex-1 min-w-0">
-                        <span class="text-[10px] font-extrabold uppercase text-slate-500">Rientro</span>
-                        <p class="text-xs font-bold text-slate-800 truncate">${escapeHtml(data.end.address)}</p>
-                    </div>
+            const endBanner = document.createElement("div");
+            endBanner.className = "p-3.5 bg-slate-100/70 flex items-center gap-3";
+            endBanner.innerHTML = `
+                <div class="w-8 h-8 rounded-full bg-slate-800 text-white font-extrabold text-xs flex items-center justify-center flex-shrink-0">A</div>
+                <div class="flex-1 min-w-0">
+                    <span class="text-[10px] font-extrabold uppercase text-slate-500">Rientro</span>
+                    <p class="text-xs font-bold text-slate-800 truncate">${escapeHtml(data.end.address)}</p>
                 </div>
             `;
+            container.appendChild(endBanner);
 
-            container.querySelectorAll(".delivery-checkbox").forEach(cb => {
+            sortableStopsWrapper.querySelectorAll("button[data-move-stop]").forEach(btn => {
+                btn.addEventListener("click", (e) => {
+                    const idx = parseInt(e.currentTarget.dataset.stopIndex, 10);
+                    const dir = e.currentTarget.dataset.moveStop;
+                    const stopsCopy = [...appState.activeRoute.stops];
+                    if (dir === "up" && idx > 0) {
+                        const temp = stopsCopy[idx - 1];
+                        stopsCopy[idx - 1] = stopsCopy[idx];
+                        stopsCopy[idx] = temp;
+                        applyManualRouteReorder(stopsCopy);
+                    } else if (dir === "down" && idx < stopsCopy.length - 1) {
+                        const temp = stopsCopy[idx + 1];
+                        stopsCopy[idx + 1] = stopsCopy[idx];
+                        stopsCopy[idx] = temp;
+                        applyManualRouteReorder(stopsCopy);
+                    }
+                });
+            });
+
+            const stopsSnapshot = [...appState.activeRoute.stops];
+            enableListDragAndDrop(
+                sortableStopsWrapper,
+                () => stopsSnapshot,
+                () => applyManualRouteReorder([...stopsSnapshot])
+            );
+
+            sortableStopsWrapper.querySelectorAll(".delivery-checkbox").forEach(cb => {
                 cb.addEventListener("change", (e) => {
                     const idx = parseInt(e.target.dataset.stopIndex, 10);
                     const isChecked = e.target.checked;
@@ -1914,7 +2315,7 @@
                     saveActiveShiftToStorage();
                     updateChecklistProgressUI();
 
-                    const row = e.target.closest("div");
+                    const row = e.target.closest("div[data-item-idx]");
                     const titleEl = row.querySelector(".stop-title");
                     const boxEl = row.querySelector(".custom-check-box");
                     const iconEl = row.querySelector(".check-icon");
@@ -1929,7 +2330,7 @@
                         boxEl.classList.remove("border-slate-300", "bg-white");
                         iconEl.classList.remove("hidden");
                         badgeEl.classList.add("bg-slate-200", "text-slate-500");
-                        badgeEl.classList.remove("bg-posteBlue", "text-white");
+                        badgeEl.classList.remove("bg-posteBlue", "text-white", "bg-amber-400", "text-slate-950");
                     } else {
                         row.classList.remove("bg-slate-50/90");
                         row.classList.add("bg-white");
@@ -1939,7 +2340,11 @@
                         boxEl.classList.add("border-slate-300", "bg-white");
                         iconEl.classList.add("hidden");
                         badgeEl.classList.remove("bg-slate-200", "text-slate-500");
-                        badgeEl.classList.add("bg-posteBlue", "text-white");
+                        if (appState.activeRoute.stops[idx].priority) {
+                            badgeEl.classList.add("bg-amber-400", "text-slate-950");
+                        } else {
+                            badgeEl.classList.add("bg-posteBlue", "text-white");
+                        }
                     }
 
                     renderInteractiveMap(appState.activeRoute, false);
@@ -1977,12 +2382,10 @@
                     attributionControl: false
                 }).setView([data.start.lat, data.start.lon], 13);
 
-                // Layer principale Esri World Street Map (gratuito, senza API key e senza blocchi Referer/403)
                 const primaryTiles = L.tileLayer("https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}", {
                     maxZoom: 19
                 });
 
-                // Fallback automatico su Esri World Topo Map
                 let fallbackActivated = false;
                 primaryTiles.on("tileerror", () => {
                     if (!fallbackActivated) {
@@ -2020,7 +2423,6 @@
                 }
             }
 
-            // Linea percorso (continua lungo le strade reali se OSRM disponibile, tratteggiata se fallback)
             if (Array.isArray(data.latLngs) && data.latLngs.length >= 2) {
                 if (data.isRoadGeometry) {
                     L.polyline(data.latLngs, {
@@ -2044,7 +2446,6 @@
                 }
             }
 
-            // Marker Partenza
             const startIcon = L.divIcon({
                 className: "custom-div-icon",
                 html: `<div class="marker-pin marker-start">P</div>`,
@@ -2056,21 +2457,19 @@
                 .addTo(appState.mapLayerGroup);
             boundsPoints.push([data.start.lat, data.start.lon]);
 
-            // Marker Tappe Numerate
             data.stops.forEach(stop => {
                 const stopIcon = L.divIcon({
                     className: "custom-div-icon",
-                    html: `<div class="marker-pin marker-stop ${stop.completed ? "completed" : ""}">${stop.order}</div>`,
+                    html: `<div class="marker-pin marker-stop ${stop.priority ? "priority" : ""} ${stop.completed ? "completed" : ""}">${stop.order}</div>`,
                     iconSize: [32, 32],
                     iconAnchor: [16, 16]
                 });
                 L.marker([stop.lat, stop.lon], { icon: stopIcon, zIndexOffset: 400 - stop.order })
-                    .bindPopup(`<strong>Tappa #${stop.order}:</strong><br>${escapeHtml(stop.address)}`)
+                    .bindPopup(`<strong>Tappa #${stop.order}${stop.priority ? " ★ Priorità" : ""}:</strong><br>${escapeHtml(stop.address)}`)
                     .addTo(appState.mapLayerGroup);
                 boundsPoints.push([stop.lat, stop.lon]);
             });
 
-            // Marker Arrivo se diverso dalla Partenza
             const sameStartEnd = Math.abs(data.start.lat - data.end.lat) < 0.0002 && Math.abs(data.start.lon - data.end.lon) < 0.0002;
             if (!sameStartEnd) {
                 const endIcon = L.divIcon({
@@ -2123,6 +2522,12 @@
             });
 
             document.getElementById("btn-edit-addresses-from-route").addEventListener("click", () => {
+                if (appState.activeRoute) {
+                    appState.rawAddresses = [
+                        ...appState.activeRoute.stops.map(s => ({ address: s.address, priority: Boolean(s.priority) })),
+                        ...(appState.activeRoute.anomalies || []).map(a => ({ address: a.address, priority: Boolean(a.priority) }))
+                    ];
+                }
                 goToStep(2);
             });
 

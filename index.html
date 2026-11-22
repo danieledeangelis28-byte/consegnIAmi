@@ -2563,30 +2563,31 @@
         }
 
         /**
-         * Pre-elaborazione Canvas avanzata per migliorare la lettura OCR:
-         * - Upscaling nitido per caratteri piccoli
+         * Pre-elaborazione Canvas bilanciata per migliorare la lettura OCR:
+         * - Upscaling nitido per caratteri piccoli e numeri civici senza erodere i tratti
          * - Rilevamento e inversione automatica per screenshot in modalità scura (Dark Mode)
-         * - Normalizzazione adattiva del contrasto per preservare numeri civici e punteggiatura
+         * - Normalizzazione adattiva del contrasto in scala di grigi per Tesseract LSTM
          */
         function preprocessImageForOCR(dataUrl) {
             return new Promise((resolve) => {
                 const img = new Image();
                 img.onload = () => {
-                    const scale = img.width < 1200 ? 2.0 : 1.35;
+                    const scale = img.width < 1200 ? 1.9 : (img.width < 1800 ? 1.35 : 1.0);
+                    const w = Math.round(img.width * scale);
+                    const h = Math.round(img.height * scale);
                     const canvas = document.createElement("canvas");
-                    canvas.width = Math.round(img.width * scale);
-                    canvas.height = Math.round(img.height * scale);
+                    canvas.width = w;
+                    canvas.height = h;
                     const ctx = canvas.getContext("2d");
 
                     ctx.fillStyle = "#ffffff";
-                    ctx.fillRect(0, 0, canvas.width, canvas.height);
+                    ctx.fillRect(0, 0, w, h);
                     ctx.imageSmoothingEnabled = true;
                     ctx.imageSmoothingQuality = "high";
-                    ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+                    ctx.drawImage(img, 0, 0, w, h);
 
-                    const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+                    const imgData = ctx.getImageData(0, 0, w, h);
                     const d = imgData.data;
-                    const pixelCount = d.length / 4;
 
                     // Campiona luminosità per rilevare sfondi scuri (Dark Mode) e intervallo dinamico
                     let lumSum = 0;
@@ -2598,11 +2599,9 @@
                         hist[g]++;
                         sampled++;
                     }
-                    const avgLum = sampled > 0 ? lumSum / sampled : 200;
-                    const isDarkBackground = avgLum < 115;
+                    const isDarkBackground = sampled > 0 && (lumSum / sampled) < 115;
 
-                    // Calcola 5° e 95° percentile per stiramento contrasto adattivo
-                    let lowCut = 30;
+                    let lowCut = 25;
                     let highCut = 235;
                     if (sampled > 0) {
                         let acc = 0;
@@ -2618,7 +2617,7 @@
                             }
                         }
                     }
-                    const range = Math.max(40, highCut - lowCut);
+                    const range = Math.max(45, highCut - lowCut);
 
                     for (let i = 0; i < d.length; i += 4) {
                         let gray = 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2];
@@ -2626,15 +2625,13 @@
                             gray = 255 - gray;
                         }
                         const stretched = Math.max(0, Math.min(255, ((gray - lowCut) / range) * 255));
-                        const contrasted = stretched > 195 ? 255 : (stretched < 85 ? 0 : stretched);
+                        const contrasted = stretched > 195 ? 255 : (stretched < 75 ? 0 : stretched);
                         d[i] = contrasted;
                         d[i + 1] = contrasted;
                         d[i + 2] = contrasted;
                     }
 
-                    if (pixelCount > 0) {
-                        ctx.putImageData(imgData, 0, 0);
-                    }
+                    ctx.putImageData(imgData, 0, 0);
                     resolve(canvas.toDataURL("image/png"));
                 };
                 img.onerror = () => resolve(dataUrl);
@@ -2659,52 +2656,219 @@
         }
 
         /**
-         * Filtra le parole a bassa confidenza (icone, pallini, spunte, simboli) e ripulisce la riga OCR
+         * Ripulisce un singolo token letto dall'OCR eliminando simboli o lettere extra aggiunte,
+         * preservando tutti gli spazi tra le parole, i numeri civici e le elisioni/iniziali italiane
          */
-        function cleanOCRLineTokens(lineObjOrText) {
-            let text = "";
-            if (lineObjOrText && typeof lineObjOrText === "object" && Array.isArray(lineObjOrText.words)) {
-                const keptWords = lineObjOrText.words
-                    .filter((w) => {
-                        const t = (w.text || "").trim();
-                        if (!t) return false;
-                        // Scarta simboli isolati o icone lette con bassa confidenza
-                        if (/^[^a-zA-Z0-9àèéìòùÀÈÉÌÒÙ]+$/.test(t)) return false;
-                        if (typeof w.confidence === "number" && w.confidence < 38 && t.length <= 2) return false;
-                        return true;
-                    })
-                    .map((w) => w.text.trim());
-                text = keptWords.join(" ");
-            } else {
-                text = typeof lineObjOrText === "string" ? lineObjOrText : (lineObjOrText?.text || "");
+        function sanitizeOCRAddressToken(token) {
+            let t = (token || "").replace(/[^A-Za-zÀ-ÖØ-öø-ÿ0-9.,'\/-]/g, "").trim();
+            if (!t) return "";
+
+            // Rimuove punteggiatura spuria all'inizio o alla fine (preservando virgola finale e punto sulle iniziali come "S.")
+            t = t.replace(/^[^a-zA-Z0-9àèéìòùÀÈÉÌÒÙ]+/, "");
+            if (!/^[a-zA-ZàèéìòùÀÈÉÌÒÙ]\.$/.test(t)) {
+                t = t.replace(/[^a-zA-Z0-9àèéìòùÀÈÉÌÒÙ,\/]+$/, "");
+            }
+            if (!t) return "";
+
+            // Rimuove punti o trattini spuri inseriti dentro una parola (es. "Cor.nelia" -> "Cornelia")
+            t = t.replace(/([a-zA-ZàèéìòùÀÈÉÌÒÙ]{2,})[\.\-]([a-zA-ZàèéìòùÀÈÉÌÒÙ]{2,})/g, "$1$2");
+
+            // Rimuove apostrofi spuri dentro le parole, mantenendo le elisioni italiane (d', l', sant', dell', all', nell', sull', un', de')
+            t = t.replace(/\b(?!d'|l'|sant'|dell'|all'|nell'|sull'|un'|de')([a-zA-ZàèéìòùÀÈÉÌÒÙ]+)'([a-zA-ZàèéìòùÀÈÉÌÒÙ]+)/gi, "$1$2");
+
+            // Ripulisce caratteri extra attaccati ai numeri civici (es. "164l" -> "164", "164I" -> "164"),
+            // preservando i sub-civici reali (es. "107/B", "12A", "12B", "12C", "12-14")
+            if (/^\d+/.test(t)) {
+                const civicMatch = t.match(/^(\d+)(?:([\/\-]\d{1,4}[a-fA-F]?)|([a-fA-F]))?$/);
+                if (civicMatch) {
+                    t = `${civicMatch[1]}${civicMatch[2] || civicMatch[3] || ""}`;
+                } else {
+                    const digitsOnly = t.match(/^(\d+)/);
+                    if (digitsOnly) t = digitsOnly[1];
+                }
             }
 
-            let clean = normalizeOCRStreetPrefixes(text)
-                // Rimuove icone/simboli iniziali e caratteri spuri attaccati prima del prefisso stradale
-                .replace(/^[^a-zA-Z0-9]+/, "")
-                .replace(/^[a-zA-Z0-9©®@°•▪▸\|]{1,2}\s+(?=(via|viale|piazza|piazzale|largo|corso|vicolo|circonvallazione|lungotevere|strada|borgata)\b)/i, "")
-                // Rimuove codici tracking lunghi, pesi, orari, CAP e sigle provincia tra parentesi
-                .replace(/\b\d{7,}\b/g, " ")
-                .replace(/\b\d+[.,]?\d*\s*(?:kg|gr|g)\b/gi, " ")
-                .replace(/\b\d{1,2}:\d{2}\b/g, " ")
-                .replace(/\b\d{5}\b/g, " ")
-                .replace(/[\(\[]\s*(?:rm|roma|vt|ri|lt|fr|it|italia)\s*[\)\]]/gi, " ")
-                // Rimuove simboli spuri isolati interni o finali
-                .replace(/[@#\$%\^&\*_+=<>\|~\\]+/g, " ")
-                .replace(/\s+/g, " ")
-                .trim();
-
-            return clean;
+            return t;
         }
 
         /**
-         * Estrae e pulisce gli indirizzi stradali dai dati riconosciuti da Tesseract (righe + confidenza)
+         * Ripulisce i token di una riga OCR scartando icone/simboli isolati e rumore a bassa confidenza,
+         * preservando intatti gli spazi e i numeri civici
+         */
+        function cleanOCRLineTokens(lineObjOrText) {
+            const validInitialsOrPreps = new Set(["a", "e", "i", "o", "u", "d", "l", "s", "v", "p", "g", "m", "r", "t", "f", "c", "b", "n"]);
+            let text = "";
+
+            if (lineObjOrText && typeof lineObjOrText === "object" && Array.isArray(lineObjOrText.words)) {
+                const keptWords = [];
+                for (const w of lineObjOrText.words) {
+                    const rawWord = (w.text || "").trim();
+                    if (!rawWord) continue;
+                    // Scarta simboli isolati, icone, freccette, checkbox
+                    if (/^[^a-zA-Z0-9àèéìòùÀÈÉÌÒÙ]+$/.test(rawWord)) continue;
+
+                    const conf = typeof w.confidence === "number" ? w.confidence : 80;
+                    const cleanedWord = sanitizeOCRAddressToken(rawWord);
+                    if (!cleanedWord) continue;
+
+                    // Scarta caratteri singoli casuali letti con bassa confidenza (spesso icone UI laterali)
+                    if (cleanedWord.length === 1 && !/\d/.test(cleanedWord)) {
+                        if (conf < 68 || !validInitialsOrPreps.has(cleanedWord.toLowerCase())) {
+                            continue;
+                        }
+                    }
+
+                    // Scarta frammenti non numerici con confidenza bassissima (rumore grafico)
+                    if (conf < 35 && !/\d/.test(cleanedWord)) {
+                        continue;
+                    }
+
+                    keptWords.push(cleanedWord);
+                }
+                text = keptWords.join(" ");
+            } else {
+                const rawStr = typeof lineObjOrText === "string" ? lineObjOrText : (lineObjOrText?.text || "");
+                text = rawStr
+                    .split(/\s+/)
+                    .map(sanitizeOCRAddressToken)
+                    .filter((tok) => {
+                        if (!tok) return false;
+                        if (tok.length === 1 && !/\d/.test(tok) && !validInitialsOrPreps.has(tok.toLowerCase())) {
+                            return false;
+                        }
+                        return true;
+                    })
+                    .join(" ");
+            }
+
+            return normalizeOCRStreetPrefixes(text)
+                .replace(/\b\d{7,}\b/g, " ")
+                .replace(/\b\d+[.,]?\d*\s*(?:kg|gr|g)\b/gi, " ")
+                .replace(/\b\d{1,2}:\d{2}\b/g, " ")
+                .replace(/\s+/g, " ")
+                .trim();
+        }
+
+        /**
+         * Analizza in modo strutturale una riga contenente un indirizzo italiano,
+         * separando prefisso, nome via (inclusi numeri romani come XI), numero civico e comune
+         * senza mai perdere il numero civico anche in presenza di CAP, sigla provincia o note successive
+         */
+        function extractStructuredItalianAddress(lineText, defaultCity) {
+            const streetStartRegex = /(?:^|[\s\-–—:;•\(\)\[\]\|])(via|viale|piazza|piazzale|largo|corso|vicolo|circonvallazione|lungotevere|strada|borgata|traversa|salita|discesa|borgo|contrada)\b/i;
+            const match = lineText.match(streetStartRegex);
+            if (!match) return null;
+
+            const prefixStart = match.index + match[0].toLowerCase().indexOf(match[1].toLowerCase());
+            let body = lineText.slice(prefixStart).trim();
+
+            // Rimuove eventuali indicazioni di scala/interno/citofono/piano in coda
+            body = body.replace(/\b(?:scala|sc\.|interno|int\.|piano|citofono|cit\.|presso|c\/o|palazzina|pal\.|edificio|ed\.|lotto|isolato)\b.*$/i, "").trim();
+
+            const commaParts = body.split(",").map(p => p.trim()).filter(Boolean);
+            let mainSegment = commaParts[0] || "";
+            let trailingCity = "";
+            let separatedCivic = "";
+
+            if (commaParts.length >= 2) {
+                const secondPartClean = commaParts[1].replace(/^(?:n\.?|nr\.?|civ\.?)\s*/i, "").trim();
+                if (/^(?:\d{1,5}(?:[\/\-]\d{1,4})?(?:\s*[a-fA-F])?|snc)$/i.test(secondPartClean)) {
+                    separatedCivic = secondPartClean.replace(/\s+/g, "");
+                    trailingCity = commaParts.slice(2).join(" ");
+                } else {
+                    trailingCity = commaParts.slice(1).join(" ");
+                }
+            }
+
+            // Estrae eventuale comune esplicito dal segmento dopo la virgola
+            let explicitCity = trailingCity
+                .replace(/\b\d{5}\b/g, " ")
+                .replace(/[\(\[]\s*(?:rm|roma|vt|ri|lt|fr|it|italia)\s*[\)\]]/gi, " ")
+                .replace(/\b(?:rm|vt|ri|lt|fr|italia|italy|lazio)\b/gi, " ")
+                .replace(/[^a-zA-ZàèéìòùÀÈÉÌÒÙ'\s-]/g, " ")
+                .replace(/\s+/g, " ")
+                .trim();
+
+            // Rimuove CAP e sigle provincia dal segmento principale prima di isolare via + civico
+            mainSegment = mainSegment
+                .replace(/\b\d{5}\b/g, " ")
+                .replace(/[\(\[]\s*(?:rm|roma|vt|ri|lt|fr|it|italia)\s*[\)\]]/gi, " ")
+                .replace(/\s+/g, " ")
+                .trim();
+
+            const prefixMatch = mainSegment.match(/^(via|viale|piazza|piazzale|largo|corso|vicolo|circonvallazione|lungotevere|strada|borgata|traversa|salita|discesa|borgo|contrada)\b\s*(.*)$/i);
+            if (!prefixMatch) return null;
+
+            const rawPrefix = prefixMatch[1];
+            const prefix = rawPrefix.charAt(0).toUpperCase() + rawPrefix.slice(1).toLowerCase();
+            let rest = (prefixMatch[2] || "").trim();
+
+            let streetName = "";
+            let houseNumber = separatedCivic;
+
+            if (!houseNumber) {
+                // Cattura il nome della via (anche con numeri romani tipo "Gregorio XI" o numeri iniziali tipo "24 Maggio")
+                // seguito dal numero civico (es. 164, 107/B, n. 12, snc) e dall'eventuale comune/rumore successivo
+                const civicPattern = /^([a-zA-ZàèéìòùÀÈÉÌÒÙ0-9'.\-\s]{2,55}?)(?:\s+(?:n\.?|nr\.?|civ\.?)\s*|\s+)(\d{1,5}(?:[\/\-]\d{1,4})?(?:\s*[a-fA-F])?|\bsnc\b)(?:\s+(.*))?$/i;
+                const mCivic = rest.match(civicPattern);
+                if (mCivic && mCivic[1].trim().length >= 3) {
+                    streetName = mCivic[1].trim();
+                    houseNumber = mCivic[2].replace(/\s+/g, "");
+                    const afterCivic = (mCivic[3] || "").trim();
+                    if (!explicitCity && afterCivic) {
+                        const cleanedAfter = afterCivic
+                            .replace(/\b(?:rm|vt|ri|lt|fr|italia|italy|lazio)\b/gi, " ")
+                            .replace(/[^a-zA-ZàèéìòùÀÈÉÌÒÙ'\s-]/g, " ")
+                            .replace(/\s+/g, " ")
+                            .trim();
+                        // Accetta come comune solo parole di almeno 3 lettere (scartando lettere singole residue tipo "e" o "o")
+                        if (cleanedAfter.length >= 3) {
+                            explicitCity = cleanedAfter;
+                        }
+                    }
+                } else {
+                    streetName = rest;
+                }
+            } else {
+                streetName = rest;
+            }
+
+            // Rimuove eventuali caratteri singoli spuri a fine nome via (preservando i numeri romani I, V, X)
+            streetName = streetName
+                .replace(/\s+[a-wyzA-WYZ]$/, "")
+                .replace(/[,;.\-\s]+$/, "")
+                .replace(/\s+/g, " ")
+                .trim();
+
+            // Filtra falsi positivi (parole dell'interfaccia app o righe senza un vero nome di via)
+            const nonAddressWords = new Set([
+                "avvia", "invia", "percorso", "indicazioni", "navigazione", "destinazione",
+                "partenza", "arrivo", "consegna", "consegne", "pacco", "pacchi",
+                "ordine", "ordini", "cliente", "mittente", "destinatario", "indirizzo",
+                "indirizzi", "ricerca", "recenti", "salvati", "mappa", "giro", "turno",
+                "stato", "note", "telefono", "dettagli", "riepilogo", "lista", "elenco",
+                "totale", "completato", "rimanenti", "oggi", "ieri", "posta", "poste"
+            ]);
+
+            const streetWords = streetName.toLowerCase().split(/\s+/).filter(Boolean);
+            if (streetWords.length === 0) return null;
+            if (streetWords.every(w => nonAddressWords.has(w))) return null;
+            if (!streetWords.some(w => w.replace(/[^a-zA-ZàèéìòùÀÈÉÌÒÙ]/g, "").length >= 3)) return null;
+
+            return {
+                prefix,
+                streetName,
+                houseNumber,
+                explicitCity,
+                city: explicitCity || defaultCity
+            };
+        }
+
+        /**
+         * Estrae e pulisce gli indirizzi stradali dai dati riconosciuti da Tesseract,
+         * gestendo anche indirizzi spezzati su due righe consecutive (via su riga 1, civico/città su riga 2)
          */
         function parseAddressesFromOCRText(ocrDataOrText) {
-            const streetPrefixes = /(via|viale|piazza|piazzale|largo|corso|vicolo|circonvallazione|lungotevere|strada|borgata)\b/i;
-            const ignoreLineRegex = /^(ricerche recenti|indicazioni|avvia|salvati|recenti|oggi|ieri|posta|poste italiane|roma,?\s*rm|destinatario|mittente|note|telefono|tel\.?)$/i;
-            const cityOnlyRegex = /^([a-zàèéìòù'\s]+),\s*(rm|roma|vt|ri|lt|fr)$/i;
-
             const rawItems = (ocrDataOrText && typeof ocrDataOrText === "object" && Array.isArray(ocrDataOrText.lines))
                 ? ocrDataOrText.lines
                 : String(ocrDataOrText || "").split(/\r?\n/);
@@ -2713,46 +2877,70 @@
                 .map(cleanOCRLineTokens)
                 .filter(Boolean);
 
+            const defaultCity = getDefaultMunicipality();
             const extracted = [];
+            const seenKeys = new Set();
 
             for (let i = 0; i < cleanedLines.length; i++) {
-                let clean = cleanedLines[i];
+                const line = cleanedLines[i];
+                if (line.length < 5) continue;
 
-                if (clean.length < 5 || ignoreLineRegex.test(clean)) continue;
+                const parsed = extractStructuredItalianAddress(line, defaultCity);
+                if (!parsed) continue;
 
-                if (streetPrefixes.test(clean)) {
-                    const match = clean.match(streetPrefixes);
-                    if (match && match.index > 0 && match.index <= 4) {
-                        clean = clean.slice(match.index).trim();
-                    }
+                // Controlla se la riga successiva contiene il numero civico o il CAP/comune dell'indirizzo corrente
+                if (i + 1 < cleanedLines.length) {
+                    const nextLine = cleanedLines[i + 1];
+                    const nextHasOwnStreet = extractStructuredItalianAddress(nextLine, defaultCity) !== null;
 
-                    // Tronca eventuali residui dopo civico + comune (es. note o codici a fine riga)
-                    clean = clean
-                        .replace(/^((?:via|viale|piazza|piazzale|largo|corso|vicolo|circonvallazione|lungotevere|strada|borgata)\s+[a-zàèéìòùA-ZÀÈÉÌÒÙ0-9'.\-\s]{2,42}?\s+\d+[a-zA-Z]?(?:[\/\-]\d*[a-zA-Z]?)?)(?:\s+[-–—•]\s+.*)?$/i, "$1")
-                        .replace(/[,;\.\-\s]+$/, "")
-                        .trim();
+                    if (!nextHasOwnStreet) {
+                        // Caso A: Riga 1 senza civico e Riga 2 inizia con il numero civico (es. "n. 313 - Roma")
+                        if (!parsed.houseNumber) {
+                            const nextCivicMatch = nextLine.match(/^(?:n\.?|nr\.?|civ\.?)?\s*(\d{1,5}(?:[\/\-]\d{1,4})?(?:\s*[a-fA-F])?)\b(.*)$/i);
+                            if (nextCivicMatch) {
+                                parsed.houseNumber = nextCivicMatch[1].replace(/\s+/g, "");
+                                const remCity = (nextCivicMatch[2] || "")
+                                    .replace(/\b\d{5}\b/g, " ")
+                                    .replace(/[\(\[]\s*(?:rm|roma|vt|ri|lt|fr|it|italia)\s*[\)\]]/gi, " ")
+                                    .replace(/\b(?:rm|vt|ri|lt|fr|italia|italy|lazio)\b/gi, " ")
+                                    .replace(/[^a-zA-ZàèéìòùÀÈÉÌÒÙ'\s-]/g, " ")
+                                    .replace(/\s+/g, " ")
+                                    .trim();
+                                if (remCity.length >= 3 && !parsed.explicitCity) {
+                                    parsed.explicitCity = remCity;
+                                    parsed.city = remCity;
+                                }
+                                i++;
+                            }
+                        }
 
-                    let citySuffix = getDefaultMunicipality();
-                    if (i + 1 < cleanedLines.length) {
-                        const nextClean = cleanedLines[i + 1].replace(/^[^a-zA-Z]+/, "").trim();
-                        const cityMatch = nextClean.match(cityOnlyRegex);
-                        if (cityMatch) {
-                            citySuffix = cityMatch[1].trim();
-                            i++;
+                        // Caso B: Riga 2 contiene CAP + Comune (es. "00166 Roma RM" o "Santa Marinella")
+                        if (!parsed.explicitCity && i + 1 < cleanedLines.length) {
+                            const candidateCityLine = cleanedLines[i + 1];
+                            if (extractStructuredItalianAddress(candidateCityLine, defaultCity) === null) {
+                                const cityOnlyMatch = candidateCityLine.match(/^(?:\d{5}\s+)?([a-zA-ZàèéìòùÀÈÉÌÒÙ'\s-]{3,35}?)(?:[\s,\(\[]+(?:rm|roma|vt|ri|lt|fr|it|italia)[\)\]]*)?$/i);
+                                if (cityOnlyMatch && !/\d/.test(cityOnlyMatch[1])) {
+                                    const detectedCity = cityOnlyMatch[1].trim();
+                                    if (detectedCity.length >= 3) {
+                                        parsed.explicitCity = detectedCity;
+                                        parsed.city = detectedCity;
+                                        i++;
+                                    }
+                                }
+                            }
                         }
                     }
+                }
 
-                    if (!/,\s*(roma|santa marinella|fiumicino|guidonia|tivoli|pomezia|ciampino|ladispoli|cerveteri|rm)\b/i.test(clean)) {
-                        clean = `${clean}, ${citySuffix}`;
-                    }
-
-                    if (clean.length >= 6) {
-                        extracted.push(clean);
-                    }
+                const formatted = `${parsed.prefix} ${parsed.streetName}${parsed.houseNumber ? " " + parsed.houseNumber : ""}, ${parsed.city}`;
+                const dedupKey = formatted.toLowerCase();
+                if (!seenKeys.has(dedupKey)) {
+                    seenKeys.add(dedupKey);
+                    extracted.push(formatted);
                 }
             }
 
-            return [...new Set(extracted)];
+            return extracted;
         }
 
         /**
@@ -2785,9 +2973,8 @@
 
             const maxLen = Math.max(a.length, b.length);
             const minLen = Math.min(a.length, b.length);
-            if (minLen / maxLen < 0.45) return 0;
+            if (minLen / maxLen < 0.50) return 0;
 
-            // Distanza di Levenshtein
             const dp = new Array(b.length + 1);
             for (let j = 0; j <= b.length; j++) dp[j] = j;
             for (let i = 1; i <= a.length; i++) {
@@ -2802,7 +2989,6 @@
             }
             const levSim = 1 - dp[b.length] / maxLen;
 
-            // Similarità sui token principali (esclude il prefisso "via/viale/piazza")
             const stopWords = new Set(["via", "viale", "piazza", "piazzale", "largo", "corso", "vicolo", "strada", "di", "del", "della", "dei", "degli", "san", "sant", "santa"]);
             const tokensA = a.split(" ").filter(t => t.length > 1 && !stopWords.has(t));
             const tokensB = b.split(" ").filter(t => t.length > 1 && !stopWords.has(t));
@@ -2831,8 +3017,8 @@
         }
 
         /**
-         * Cerca l'indirizzo reale più vicino a quello letto dall'OCR (prima sullo stradario locale IndexedDB,
-         * poi tramite ricerca geografica fuzzy Photon centrata sulla zona di consegna)
+         * Verifica e corregge il nome della via confrontandolo con lo stradario locale IndexedDB
+         * e con la ricerca geografica di prossimità Photon, preservando SEMPRE il numero civico letto dall'OCR
          */
         async function findClosestValidAddress(rawOcrAddress, biasGeo) {
             const defaultCity = getDefaultMunicipality();
@@ -2840,6 +3026,9 @@
             if (!parsed.street || parsed.street.length < 4) {
                 return { address: rawOcrAddress, ocrOriginal: "" };
             }
+
+            // Il numero civico letto dall'OCR ha la priorità assoluta e non viene mai perso o sovrascritto
+            const preservedHouseNumber = parsed.houseNumber || "";
 
             // 1. Ricerca Fuzzy sullo Stradario Locale IndexedDB e sulla Cache indirizzi
             const atlas = loadOfflineAtlas();
@@ -2851,8 +3040,7 @@
                 if (st) {
                     localStreetCandidates.push({
                         street: st.replace(/\b\w/g, c => c.toUpperCase()),
-                        city: ct ? ct.replace(/\b\w/g, c => c.toUpperCase()) : defaultCity,
-                        entries: atlas.streets[k] || []
+                        city: ct ? ct.replace(/\b\w/g, c => c.toUpperCase()) : defaultCity
                     });
                 }
             });
@@ -2862,8 +3050,7 @@
                 if (st) {
                     localStreetCandidates.push({
                         street: st.replace(/\b\w/g, c => c.toUpperCase()),
-                        city: ct ? ct.replace(/\b\w/g, c => c.toUpperCase()) : defaultCity,
-                        entries: []
+                        city: ct ? ct.replace(/\b\w/g, c => c.toUpperCase()) : defaultCity
                     });
                 }
             });
@@ -2873,8 +3060,7 @@
                 if (p.street && p.street.length >= 4) {
                     localStreetCandidates.push({
                         street: p.street.replace(/\b\w/g, c => c.toUpperCase()),
-                        city: (p.city || defaultCity).replace(/\b\w/g, c => c.toUpperCase()),
-                        entries: []
+                        city: (p.city || defaultCity).replace(/\b\w/g, c => c.toUpperCase())
                     });
                 }
             });
@@ -2896,16 +3082,8 @@
             }
 
             if (bestLocal && bestLocalScore >= 0.78) {
-                let matchedHouseNum = parsed.houseNumber;
-                if (parsed.houseNumber && bestLocal.entries.length > 0) {
-                    const targetNorm = normalizeHouseNumber(parsed.houseNumber);
-                    const exactEntry = bestLocal.entries.find(([num]) => normalizeHouseNumber(num) === targetNorm);
-                    if (exactEntry) {
-                        matchedHouseNum = exactEntry[0];
-                    }
-                }
                 const finalCity = parsed.explicitCity || bestLocal.city || defaultCity;
-                const corrected = `${bestLocal.street}${matchedHouseNum ? " " + matchedHouseNum : ""}, ${finalCity}`;
+                const corrected = `${bestLocal.street}${preservedHouseNumber ? " " + preservedHouseNumber : ""}, ${finalCity}`;
                 const changed = corrected.toLowerCase() !== rawOcrAddress.trim().toLowerCase();
                 return {
                     address: corrected,
@@ -2913,9 +3091,9 @@
                 };
             }
 
-            // 2. Ricerca Fuzzy online tramite Photon (tollerante agli errori di battitura OCR e centrata sul bias GPS)
+            // 2. Ricerca Fuzzy online tramite Photon (solo su vie reali, mantenendo il civico estratto)
             try {
-                const queryText = `${parsed.street}${parsed.houseNumber ? " " + parsed.houseNumber : ""}${parsed.city ? ", " + parsed.city : ""}`;
+                const queryText = `${parsed.street}${preservedHouseNumber ? " " + preservedHouseNumber : ""}${parsed.city ? ", " + parsed.city : ""}`;
                 let url = `https://photon.komoot.io/api/?q=${encodeURIComponent(queryText)}&limit=5&lang=it`;
                 if (biasGeo && Number.isFinite(biasGeo.lat) && Number.isFinite(biasGeo.lon)) {
                     url += `&lat=${biasGeo.lat.toFixed(4)}&lon=${biasGeo.lon.toFixed(4)}`;
@@ -2931,7 +3109,8 @@
                     for (const feat of features) {
                         const props = feat?.properties || {};
                         const coords = feat?.geometry?.coordinates;
-                        const street = (props.street || props.name || "").trim();
+                        // Accetta solo risultati stradali reali (esclude negozi, bar, fermate non stradali)
+                        const street = (props.street || (props.osm_key === "highway" ? props.name : "") || "").trim();
                         if (!street || !Array.isArray(coords)) continue;
 
                         const lat = parseFloat(coords[1]);
@@ -2949,35 +3128,19 @@
                         }
 
                         const sim = computeStreetSimilarity(parsed.street, street);
-                        const totalRank = sim - Math.min(0.12, distKm * 0.002);
-                        if (sim >= 0.72 && totalRank > bestOnlineScore) {
+                        const totalRank = sim - Math.min(0.10, distKm * 0.002);
+                        if (sim >= 0.76 && totalRank > bestOnlineScore) {
                             bestOnlineScore = totalRank;
-                            const osmHouse = (props.housenumber || "").trim();
-                            const effectiveHouse = parsed.houseNumber || osmHouse;
                             const effectiveCity = parsed.explicitCity || city || defaultCity;
                             bestOnline = {
-                                address: `${street}${effectiveHouse ? " " + effectiveHouse : ""}, ${effectiveCity}`,
+                                address: `${street}${preservedHouseNumber ? " " + preservedHouseNumber : ""}, ${effectiveCity}`,
                                 lat,
-                                lon,
-                                exactCivic: Boolean(osmHouse) && (!parsed.houseNumber || houseNumbersMatch(osmHouse, parsed.houseNumber))
+                                lon
                             };
                         }
                     }
 
                     if (bestOnline) {
-                        // Salva subito in cache se ha coordinate valide
-                        const cacheKey = bestOnline.address.trim().toLowerCase();
-                        const geoCache = loadGeoCache();
-                        if (!geoCache[cacheKey]) {
-                            geoCache[cacheKey] = {
-                                lat: bestOnline.lat,
-                                lon: bestOnline.lon,
-                                displayName: bestOnline.address,
-                                exactCivic: bestOnline.exactCivic
-                            };
-                            saveGeoCache(geoCache);
-                        }
-
                         const changed = bestOnline.address.toLowerCase() !== rawOcrAddress.trim().toLowerCase();
                         return {
                             address: bestOnline.address,
@@ -2986,7 +3149,7 @@
                     }
                 }
             } catch {
-                // In caso di offline o timeout mantiene il testo pulito dall'OCR
+                // In caso di offline o timeout mantiene l'indirizzo strutturato estratto dall'OCR
             }
 
             return { address: rawOcrAddress.trim(), ocrOriginal: "" };
@@ -3051,7 +3214,7 @@
                     const imgObj = appState.uploadedImages[idx];
                     const basePct = Math.round((idx / totalImages) * 80);
                     progressBar.style.width = `${Math.max(10, basePct)}%`;
-                    statusText.textContent = `Foto ${idx + 1}/${totalImages}: ottimizzazione contrasto...`;
+                    statusText.textContent = `Foto ${idx + 1}/${totalImages}: ottimizzazione immagine...`;
 
                     const processedImg = await preprocessImageForOCR(imgObj.dataUrl);
 
@@ -6546,6 +6709,77 @@
             setTimeout(initOrRefreshMap, 260);
         }
 
+        function splitBoundsIntoTiles(bounds, areaSqKm) {
+            let gridDim = 1;
+            if (areaSqKm > 22) {
+                gridDim = 4;
+            } else if (areaSqKm > 9) {
+                gridDim = 3;
+            } else if (areaSqKm > 2.0) {
+                gridDim = 2;
+            }
+
+            if (gridDim === 1) {
+                return [{ ...bounds }];
+            }
+
+            const tiles = [];
+            const latStep = (bounds.north - bounds.south) / gridDim;
+            const lonStep = (bounds.east - bounds.west) / gridDim;
+
+            for (let r = 0; r < gridDim; r++) {
+                for (let c = 0; c < gridDim; c++) {
+                    tiles.push({
+                        south: bounds.south + r * latStep,
+                        north: bounds.south + (r + 1) * latStep,
+                        west: bounds.west + c * lonStep,
+                        east: bounds.west + (c + 1) * lonStep
+                    });
+                }
+            }
+            return tiles;
+        }
+
+        async function fetchOverpassElementsForTile(tileBounds, onStatusUpdate) {
+            const query = `[out:json][timeout:18][bbox:${tileBounds.south.toFixed(6)},${tileBounds.west.toFixed(6)},${tileBounds.north.toFixed(6)},${tileBounds.east.toFixed(6)}];(nw["addr:housenumber"]["addr:street"];way["highway"]["name"];);out center tags qt;`;
+
+            const overpassEndpoints = [
+                "https://overpass-api.de/api/interpreter",
+                "https://overpass.private.coffee/api/interpreter",
+                "https://overpass.kumi.systems/api/interpreter"
+            ];
+
+            for (let epIdx = 0; epIdx < overpassEndpoints.length; epIdx++) {
+                try {
+                    if (epIdx > 0 && typeof onStatusUpdate === "function") {
+                        onStatusUpdate(epIdx + 1, overpassEndpoints.length);
+                        await new Promise(r => setTimeout(r, 850));
+                    }
+
+                    const controller = new AbortController();
+                    const timer = setTimeout(() => controller.abort(), 19000);
+                    const res = await fetch(overpassEndpoints[epIdx], {
+                        method: "POST",
+                        headers: { "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8" },
+                        body: `data=${encodeURIComponent(query)}`,
+                        signal: controller.signal
+                    });
+                    clearTimeout(timer);
+
+                    if (res.ok) {
+                        const json = await res.json();
+                        if (json && Array.isArray(json.elements)) {
+                            return json.elements;
+                        }
+                    }
+                } catch {
+                    // Passa al mirror successivo
+                }
+            }
+
+            return null;
+        }
+
         async function downloadSelectedOfflineArea() {
             const btnDownload = document.getElementById("btn-start-offline-download");
             const statusBox = document.getElementById("offline-download-status");
@@ -6563,66 +6797,64 @@
             btnDownload.disabled = true;
             btnDownload.classList.add("opacity-60");
             statusBox.classList.remove("hidden");
-            statusText.textContent = `Scaricamento area (${metrics.timeLabel})...`;
-            statusPct.textContent = "20%";
-            statusBar.style.width = "20%";
+            statusText.textContent = `Preparazione scaricamento (${metrics.timeLabel})...`;
+            statusPct.textContent = "10%";
+            statusBar.style.width = "10%";
 
-            const query = `[out:json][timeout:25][bbox:${bounds.south.toFixed(6)},${bounds.west.toFixed(6)},${bounds.north.toFixed(6)},${bounds.east.toFixed(6)}];(nwr["addr:housenumber"]["addr:street"];way["highway"]["name"];);out center tags qt;`;
+            let tiles = splitBoundsIntoTiles(bounds, metrics.areaSqKm);
+            const allElements = [];
+            let completedTiles = 0;
 
-            const overpassEndpoints = [
-                "https://overpass-api.de/api/interpreter",
-                "https://overpass.kumi.systems/api/interpreter"
-            ];
+            for (let tIdx = 0; tIdx < tiles.length; tIdx++) {
+                const tile = tiles[tIdx];
+                const basePct = 12 + Math.round((tIdx / tiles.length) * 70);
+                statusPct.textContent = `${basePct}%`;
+                statusBar.style.width = `${basePct}%`;
+                statusText.textContent = tiles.length > 1
+                    ? `Scaricamento riquadro ${tIdx + 1}/${tiles.length}...`
+                    : "Scaricamento vie e numeri civici...";
 
-            let overpassData = null;
+                let tileElements = await fetchOverpassElementsForTile(tile, (mirrorNum) => {
+                    statusText.textContent = tiles.length > 1
+                        ? `Riquadro ${tIdx + 1}/${tiles.length} (server ${mirrorNum})...`
+                        : `Connessione a server alternativo (${mirrorNum})...`;
+                });
 
-            for (let epIdx = 0; epIdx < overpassEndpoints.length; epIdx++) {
-                try {
-                    statusText.textContent = epIdx === 0
-                        ? "Scaricamento vie e numeri civici..."
-                        : "Riprovo su server secondario...";
-                    statusPct.textContent = "45%";
-                    statusBar.style.width = "45%";
+                // Se un riquadro singolo molto denso va in timeout, lo suddivide al volo in 4 sotto-riquadri
+                if (!tileElements && tiles.length === 1) {
+                    statusText.textContent = "Area molto densa: suddivisione in 4 sotto-riquadri...";
+                    tiles = splitBoundsIntoTiles(tile, 4.0);
+                    tIdx = -1;
+                    continue;
+                }
 
-                    const controller = new AbortController();
-                    const timer = setTimeout(() => controller.abort(), 24000);
-                    const res = await fetch(overpassEndpoints[epIdx], {
-                        method: "POST",
-                        headers: { "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8" },
-                        body: `data=${encodeURIComponent(query)}`,
-                        signal: controller.signal
-                    });
-                    clearTimeout(timer);
+                if (Array.isArray(tileElements)) {
+                    allElements.push(...tileElements);
+                    completedTiles++;
+                }
 
-                    if (res.ok) {
-                        const json = await res.json();
-                        if (json && Array.isArray(json.elements)) {
-                            overpassData = json.elements;
-                            break;
-                        }
-                    }
-                } catch {
-                    // Prova il server successivo
+                if (tIdx < tiles.length - 1) {
+                    await new Promise(r => setTimeout(r, 350));
                 }
             }
 
-            if (!overpassData) {
+            if (completedTiles === 0) {
                 btnDownload.disabled = false;
                 btnDownload.classList.remove("opacity-60");
                 statusBox.classList.add("hidden");
-                showToast("Server stradario momentaneamente occupato. Riprova tra qualche secondo.", "error");
+                showToast("Server stradario occupato. Riduci leggermente il riquadro o riprova tra qualche secondo.", "error");
                 return;
             }
 
             statusText.textContent = "Salvataggio civici su IndexedDB...";
-            statusPct.textContent = "80%";
-            statusBar.style.width = "80%";
+            statusPct.textContent = "88%";
+            statusBar.style.width = "88%";
 
             const atlas = loadOfflineAtlas();
             let addedCivics = 0;
             let addedRoads = 0;
 
-            overpassData.forEach((el) => {
+            allElements.forEach((el) => {
                 const tags = el.tags || {};
                 const lat = typeof el.lat === "number" ? el.lat : el.center?.lat;
                 const lon = typeof el.lon === "number" ? el.lon : el.center?.lon;
@@ -6691,7 +6923,8 @@
 
             updateOfflineAtlasSummaryUI();
             drawSavedRegionsOnSelectorMap();
-            showToast(`Mappa locale salvata su IndexedDB: +${addedCivics} civici e +${addedRoads} vie!`, "success");
+            const partialNote = completedTiles < tiles.length ? ` (${completedTiles}/${tiles.length} riquadri)` : "";
+            showToast(`Mappa locale salvata${partialNote}: +${addedCivics} civici e +${addedRoads} vie!`, "success");
         }
 
         function initOfflineMapDownloader() {

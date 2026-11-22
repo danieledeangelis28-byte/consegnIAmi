@@ -1061,20 +1061,21 @@
         let lastGeocodeTimestamp = 0;
 
         /**
-         * Normalizza ogni elemento indirizzo nel formato { address, priority, note }
+         * Normalizza ogni elemento indirizzo nel formato { address, priority, note, ocrOriginal }
          */
         function normalizeAddressItem(item) {
             if (typeof item === "string") {
-                return { address: item, priority: false, note: "" };
+                return { address: item, priority: false, note: "", ocrOriginal: "" };
             }
             if (item && typeof item === "object") {
                 return {
                     address: typeof item.address === "string" ? item.address : "",
                     priority: Boolean(item.priority),
-                    note: typeof item.note === "string" ? item.note : ""
+                    note: typeof item.note === "string" ? item.note : "",
+                    ocrOriginal: typeof item.ocrOriginal === "string" ? item.ocrOriginal : ""
                 };
             }
-            return { address: "", priority: false, note: "" };
+            return { address: "", priority: false, note: "", ocrOriginal: "" };
         }
 
         /**
@@ -1771,7 +1772,7 @@
                 }
 
                 lines.forEach(addr => {
-                    appState.manualAddresses.push({ address: addr, priority: isPriority, note: "" });
+                    appState.manualAddresses.push({ address: addr, priority: isPriority, note: "", ocrOriginal: "" });
                 });
                 singleManualInput.value = "";
                 setSinglePriorityVisual(false);
@@ -1805,7 +1806,7 @@
                 const pendingText = singleManualInput.value.trim();
                 if (pendingText.length >= 3) {
                     const isPriority = singleManualPriorityBtn.dataset.priority === "true";
-                    appState.manualAddresses.push({ address: pendingText, priority: isPriority, note: "" });
+                    appState.manualAddresses.push({ address: pendingText, priority: isPriority, note: "", ocrOriginal: "" });
                     singleManualInput.value = "";
                     setSinglePriorityVisual(false);
                     hideSuggestions();
@@ -1817,7 +1818,8 @@
                     .map(item => ({
                         address: item.address.trim(),
                         priority: item.priority,
-                        note: item.note.trim()
+                        note: item.note.trim(),
+                        ocrOriginal: ""
                     }))
                     .filter(item => item.address.length >= 4);
 
@@ -2561,13 +2563,16 @@
         }
 
         /**
-         * Pre-elaborazione Canvas per migliorare la lettura OCR degli screenshot
+         * Pre-elaborazione Canvas avanzata per migliorare la lettura OCR:
+         * - Upscaling nitido per caratteri piccoli
+         * - Rilevamento e inversione automatica per screenshot in modalità scura (Dark Mode)
+         * - Normalizzazione adattiva del contrasto per preservare numeri civici e punteggiatura
          */
         function preprocessImageForOCR(dataUrl) {
             return new Promise((resolve) => {
                 const img = new Image();
                 img.onload = () => {
-                    const scale = img.width < 1100 ? 1.8 : 1.2;
+                    const scale = img.width < 1200 ? 2.0 : 1.35;
                     const canvas = document.createElement("canvas");
                     canvas.width = Math.round(img.width * scale);
                     canvas.height = Math.round(img.height * scale);
@@ -2575,18 +2580,61 @@
 
                     ctx.fillStyle = "#ffffff";
                     ctx.fillRect(0, 0, canvas.width, canvas.height);
+                    ctx.imageSmoothingEnabled = true;
+                    ctx.imageSmoothingQuality = "high";
                     ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
 
                     const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
                     const d = imgData.data;
+                    const pixelCount = d.length / 4;
+
+                    // Campiona luminosità per rilevare sfondi scuri (Dark Mode) e intervallo dinamico
+                    let lumSum = 0;
+                    let sampled = 0;
+                    const hist = new Uint32Array(256);
+                    for (let i = 0; i < d.length; i += 16) {
+                        const g = Math.round(0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2]);
+                        lumSum += g;
+                        hist[g]++;
+                        sampled++;
+                    }
+                    const avgLum = sampled > 0 ? lumSum / sampled : 200;
+                    const isDarkBackground = avgLum < 115;
+
+                    // Calcola 5° e 95° percentile per stiramento contrasto adattivo
+                    let lowCut = 30;
+                    let highCut = 235;
+                    if (sampled > 0) {
+                        let acc = 0;
+                        const p5 = sampled * 0.05;
+                        const p95 = sampled * 0.95;
+                        for (let v = 0; v < 256; v++) {
+                            acc += hist[v];
+                            if (acc <= p5) lowCut = v;
+                            if (acc <= p95) {
+                                highCut = v;
+                            } else {
+                                break;
+                            }
+                        }
+                    }
+                    const range = Math.max(40, highCut - lowCut);
+
                     for (let i = 0; i < d.length; i += 4) {
-                        const gray = 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2];
-                        const contrasted = gray > 175 ? 255 : (gray < 105 ? 0 : gray);
+                        let gray = 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2];
+                        if (isDarkBackground) {
+                            gray = 255 - gray;
+                        }
+                        const stretched = Math.max(0, Math.min(255, ((gray - lowCut) / range) * 255));
+                        const contrasted = stretched > 195 ? 255 : (stretched < 85 ? 0 : stretched);
                         d[i] = contrasted;
                         d[i + 1] = contrasted;
                         d[i + 2] = contrasted;
                     }
-                    ctx.putImageData(imgData, 0, 0);
+
+                    if (pixelCount > 0) {
+                        ctx.putImageData(imgData, 0, 0);
+                    }
                     resolve(canvas.toDataURL("image/png"));
                 };
                 img.onerror = () => resolve(dataUrl);
@@ -2595,29 +2643,82 @@
         }
 
         /**
-         * Estrae e pulisce gli indirizzi stradali dal testo riconosciuto dall'OCR
+         * Normalizza i prefissi stradali spesso storpiati dall'OCR (es. V1a -> Via, P1azza -> Piazza)
          */
-        function parseAddressesFromOCRText(rawText) {
-            const streetPrefixes = /(via|viale|v\.le|piazza|p\.zza|piazzale|largo|corso|vicolo|circonvallazione|lungotevere|strada|borgata)\b/i;
-            const ignoreLineRegex = /^(ricerche recenti|indicazioni|avvia|salvati|recenti|oggi|ieri|posta|poste italiane|roma,?\s*rm)$/i;
+        function normalizeOCRStreetPrefixes(text) {
+            return (text || "")
+                .replace(/\b(?:v1a|vla|v\.a|vja|v!a)\b/gi, "Via")
+                .replace(/\b(?:v1ale|vlale|v\.le|vle)\b/gi, "Viale")
+                .replace(/\b(?:p1azza|plazza|p\.zza|p\.za|pza)\b/gi, "Piazza")
+                .replace(/\b(?:p1azzale|plazzale|p\.le|ple)\b/gi, "Piazzale")
+                .replace(/\b(?:c\.so|cor5o|cso)\b/gi, "Corso")
+                .replace(/\b(?:l\.go|larg0|lgo)\b/gi, "Largo")
+                .replace(/\b(?:v1colo|vlcolo|v\.lo|vic\.)\b/gi, "Vicolo")
+                .replace(/\b(?:l\.tevere|lung0tevere|lungotevere)\b/gi, "Lungotevere")
+                .replace(/\b(?:circonv\.ne|circ\.ne)\b/gi, "Circonvallazione");
+        }
+
+        /**
+         * Filtra le parole a bassa confidenza (icone, pallini, spunte, simboli) e ripulisce la riga OCR
+         */
+        function cleanOCRLineTokens(lineObjOrText) {
+            let text = "";
+            if (lineObjOrText && typeof lineObjOrText === "object" && Array.isArray(lineObjOrText.words)) {
+                const keptWords = lineObjOrText.words
+                    .filter((w) => {
+                        const t = (w.text || "").trim();
+                        if (!t) return false;
+                        // Scarta simboli isolati o icone lette con bassa confidenza
+                        if (/^[^a-zA-Z0-9àèéìòùÀÈÉÌÒÙ]+$/.test(t)) return false;
+                        if (typeof w.confidence === "number" && w.confidence < 38 && t.length <= 2) return false;
+                        return true;
+                    })
+                    .map((w) => w.text.trim());
+                text = keptWords.join(" ");
+            } else {
+                text = typeof lineObjOrText === "string" ? lineObjOrText : (lineObjOrText?.text || "");
+            }
+
+            let clean = normalizeOCRStreetPrefixes(text)
+                // Rimuove icone/simboli iniziali e caratteri spuri attaccati prima del prefisso stradale
+                .replace(/^[^a-zA-Z0-9]+/, "")
+                .replace(/^[a-zA-Z0-9©®@°•▪▸\|]{1,2}\s+(?=(via|viale|piazza|piazzale|largo|corso|vicolo|circonvallazione|lungotevere|strada|borgata)\b)/i, "")
+                // Rimuove codici tracking lunghi, pesi, orari, CAP e sigle provincia tra parentesi
+                .replace(/\b\d{7,}\b/g, " ")
+                .replace(/\b\d+[.,]?\d*\s*(?:kg|gr|g)\b/gi, " ")
+                .replace(/\b\d{1,2}:\d{2}\b/g, " ")
+                .replace(/\b\d{5}\b/g, " ")
+                .replace(/[\(\[]\s*(?:rm|roma|vt|ri|lt|fr|it|italia)\s*[\)\]]/gi, " ")
+                // Rimuove simboli spuri isolati interni o finali
+                .replace(/[@#\$%\^&\*_+=<>\|~\\]+/g, " ")
+                .replace(/\s+/g, " ")
+                .trim();
+
+            return clean;
+        }
+
+        /**
+         * Estrae e pulisce gli indirizzi stradali dai dati riconosciuti da Tesseract (righe + confidenza)
+         */
+        function parseAddressesFromOCRText(ocrDataOrText) {
+            const streetPrefixes = /(via|viale|piazza|piazzale|largo|corso|vicolo|circonvallazione|lungotevere|strada|borgata)\b/i;
+            const ignoreLineRegex = /^(ricerche recenti|indicazioni|avvia|salvati|recenti|oggi|ieri|posta|poste italiane|roma,?\s*rm|destinatario|mittente|note|telefono|tel\.?)$/i;
             const cityOnlyRegex = /^([a-zàèéìòù'\s]+),\s*(rm|roma|vt|ri|lt|fr)$/i;
 
-            const rawLines = rawText
-                .split(/\r?\n/)
-                .map(line => line.trim())
+            const rawItems = (ocrDataOrText && typeof ocrDataOrText === "object" && Array.isArray(ocrDataOrText.lines))
+                ? ocrDataOrText.lines
+                : String(ocrDataOrText || "").split(/\r?\n/);
+
+            const cleanedLines = rawItems
+                .map(cleanOCRLineTokens)
                 .filter(Boolean);
 
             const extracted = [];
 
-            for (let i = 0; i < rawLines.length; i++) {
-                let clean = rawLines[i]
-                    .replace(/^[^a-zA-Z0-9]+/, "")
-                    .replace(/^[OQ0C@©®\(\)\[\]]+\s+(?=(via|viale|piazza|piazzale|largo|corso|vicolo|strada)\b)/i, "")
-                    .replace(/\s+/g, " ")
-                    .trim();
+            for (let i = 0; i < cleanedLines.length; i++) {
+                let clean = cleanedLines[i];
 
                 if (clean.length < 5 || ignoreLineRegex.test(clean)) continue;
-                if (/^\d{1,2}:\d{2}$/.test(clean)) continue;
 
                 if (streetPrefixes.test(clean)) {
                     const match = clean.match(streetPrefixes);
@@ -2625,9 +2726,15 @@
                         clean = clean.slice(match.index).trim();
                     }
 
+                    // Tronca eventuali residui dopo civico + comune (es. note o codici a fine riga)
+                    clean = clean
+                        .replace(/^((?:via|viale|piazza|piazzale|largo|corso|vicolo|circonvallazione|lungotevere|strada|borgata)\s+[a-zàèéìòùA-ZÀÈÉÌÒÙ0-9'.\-\s]{2,42}?\s+\d+[a-zA-Z]?(?:[\/\-]\d*[a-zA-Z]?)?)(?:\s+[-–—•]\s+.*)?$/i, "$1")
+                        .replace(/[,;\.\-\s]+$/, "")
+                        .trim();
+
                     let citySuffix = getDefaultMunicipality();
-                    if (i + 1 < rawLines.length) {
-                        const nextClean = rawLines[i + 1].replace(/^[^a-zA-Z]+/, "").trim();
+                    if (i + 1 < cleanedLines.length) {
+                        const nextClean = cleanedLines[i + 1].replace(/^[^a-zA-Z]+/, "").trim();
                         const cityMatch = nextClean.match(cityOnlyRegex);
                         if (cityMatch) {
                             citySuffix = cityMatch[1].trim();
@@ -2635,11 +2742,13 @@
                         }
                     }
 
-                    if (!/,\s*(roma|santa marinella|fiumicino|guidonia|tivoli|pomezia|ciampino|rm)\b/i.test(clean)) {
+                    if (!/,\s*(roma|santa marinella|fiumicino|guidonia|tivoli|pomezia|ciampino|ladispoli|cerveteri|rm)\b/i.test(clean)) {
                         clean = `${clean}, ${citySuffix}`;
                     }
 
-                    extracted.push(clean);
+                    if (clean.length >= 6) {
+                        extracted.push(clean);
+                    }
                 }
             }
 
@@ -2647,7 +2756,245 @@
         }
 
         /**
-         * Esegue Tesseract.js OCR 100% locale su tutte le foto caricate e li unisce agli eventuali indirizzi manuali
+         * Normalizza una stringa stradale per il confronto fuzzy tollerante agli errori OCR
+         * (es. 0->o, 1/l->i, 5->s, 8->b, rn->m, accenti rimossi)
+         */
+        function normalizeStreetForFuzzy(str) {
+            return normalizeOCRStreetPrefixes(str || "")
+                .toLowerCase()
+                .normalize("NFD")
+                .replace(/[\u0300-\u036f]/g, "")
+                .replace(/0/g, "o")
+                .replace(/[1l]/g, "i")
+                .replace(/5/g, "s")
+                .replace(/8/g, "b")
+                .replace(/rn/g, "m")
+                .replace(/[^a-z0-9\s]/g, " ")
+                .replace(/\s+/g, " ")
+                .trim();
+        }
+
+        /**
+         * Calcola la similarità (0..1) tra due nomi di via combinando distanza di Levenshtein e token in comune
+         */
+        function computeStreetSimilarity(rawStreetA, rawStreetB) {
+            const a = normalizeStreetForFuzzy(rawStreetA).slice(0, 72);
+            const b = normalizeStreetForFuzzy(rawStreetB).slice(0, 72);
+            if (!a || !b) return 0;
+            if (a === b) return 1;
+
+            const maxLen = Math.max(a.length, b.length);
+            const minLen = Math.min(a.length, b.length);
+            if (minLen / maxLen < 0.45) return 0;
+
+            // Distanza di Levenshtein
+            const dp = new Array(b.length + 1);
+            for (let j = 0; j <= b.length; j++) dp[j] = j;
+            for (let i = 1; i <= a.length; i++) {
+                let prev = dp[0];
+                dp[0] = i;
+                for (let j = 1; j <= b.length; j++) {
+                    const temp = dp[j];
+                    const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+                    dp[j] = Math.min(dp[j] + 1, dp[j - 1] + 1, prev + cost);
+                    prev = temp;
+                }
+            }
+            const levSim = 1 - dp[b.length] / maxLen;
+
+            // Similarità sui token principali (esclude il prefisso "via/viale/piazza")
+            const stopWords = new Set(["via", "viale", "piazza", "piazzale", "largo", "corso", "vicolo", "strada", "di", "del", "della", "dei", "degli", "san", "sant", "santa"]);
+            const tokensA = a.split(" ").filter(t => t.length > 1 && !stopWords.has(t));
+            const tokensB = b.split(" ").filter(t => t.length > 1 && !stopWords.has(t));
+            if (tokensA.length === 0 || tokensB.length === 0) return levSim;
+
+            let tokenScoreSum = 0;
+            for (const ta of tokensA) {
+                let bestTok = 0;
+                for (const tb of tokensB) {
+                    if (ta === tb) {
+                        bestTok = 1;
+                        break;
+                    }
+                    const tMax = Math.max(ta.length, tb.length);
+                    let diff = Math.abs(ta.length - tb.length);
+                    for (let k = 0; k < Math.min(ta.length, tb.length); k++) {
+                        if (ta[k] !== tb[k]) diff++;
+                    }
+                    bestTok = Math.max(bestTok, Math.max(0, 1 - diff / tMax));
+                }
+                tokenScoreSum += bestTok;
+            }
+            const tokenSim = tokenScoreSum / Math.max(tokensA.length, tokensB.length);
+
+            return levSim * 0.6 + tokenSim * 0.4;
+        }
+
+        /**
+         * Cerca l'indirizzo reale più vicino a quello letto dall'OCR (prima sullo stradario locale IndexedDB,
+         * poi tramite ricerca geografica fuzzy Photon centrata sulla zona di consegna)
+         */
+        async function findClosestValidAddress(rawOcrAddress, biasGeo) {
+            const defaultCity = getDefaultMunicipality();
+            const parsed = parseItalianAddress(rawOcrAddress, defaultCity);
+            if (!parsed.street || parsed.street.length < 4) {
+                return { address: rawOcrAddress, ocrOriginal: "" };
+            }
+
+            // 1. Ricerca Fuzzy sullo Stradario Locale IndexedDB e sulla Cache indirizzi
+            const atlas = loadOfflineAtlas();
+            const cache = loadGeoCache();
+            const localStreetCandidates = [];
+
+            Object.keys(atlas.streets || {}).forEach((k) => {
+                const [st, ct] = k.split("|");
+                if (st) {
+                    localStreetCandidates.push({
+                        street: st.replace(/\b\w/g, c => c.toUpperCase()),
+                        city: ct ? ct.replace(/\b\w/g, c => c.toUpperCase()) : defaultCity,
+                        entries: atlas.streets[k] || []
+                    });
+                }
+            });
+
+            Object.keys(atlas.roads || {}).forEach((k) => {
+                const [st, ct] = k.split("|");
+                if (st) {
+                    localStreetCandidates.push({
+                        street: st.replace(/\b\w/g, c => c.toUpperCase()),
+                        city: ct ? ct.replace(/\b\w/g, c => c.toUpperCase()) : defaultCity,
+                        entries: []
+                    });
+                }
+            });
+
+            Object.keys(cache || {}).forEach((k) => {
+                const p = parseItalianAddress(k, defaultCity);
+                if (p.street && p.street.length >= 4) {
+                    localStreetCandidates.push({
+                        street: p.street.replace(/\b\w/g, c => c.toUpperCase()),
+                        city: (p.city || defaultCity).replace(/\b\w/g, c => c.toUpperCase()),
+                        entries: []
+                    });
+                }
+            });
+
+            let bestLocal = null;
+            let bestLocalScore = 0;
+
+            for (const cand of localStreetCandidates) {
+                if (parsed.explicitCity && cand.city) {
+                    const cA = parsed.explicitCity.toLowerCase();
+                    const cB = cand.city.toLowerCase();
+                    if (!cA.includes(cB) && !cB.includes(cA)) continue;
+                }
+                const sim = computeStreetSimilarity(parsed.street, cand.street);
+                if (sim > bestLocalScore) {
+                    bestLocalScore = sim;
+                    bestLocal = cand;
+                }
+            }
+
+            if (bestLocal && bestLocalScore >= 0.78) {
+                let matchedHouseNum = parsed.houseNumber;
+                if (parsed.houseNumber && bestLocal.entries.length > 0) {
+                    const targetNorm = normalizeHouseNumber(parsed.houseNumber);
+                    const exactEntry = bestLocal.entries.find(([num]) => normalizeHouseNumber(num) === targetNorm);
+                    if (exactEntry) {
+                        matchedHouseNum = exactEntry[0];
+                    }
+                }
+                const finalCity = parsed.explicitCity || bestLocal.city || defaultCity;
+                const corrected = `${bestLocal.street}${matchedHouseNum ? " " + matchedHouseNum : ""}, ${finalCity}`;
+                const changed = corrected.toLowerCase() !== rawOcrAddress.trim().toLowerCase();
+                return {
+                    address: corrected,
+                    ocrOriginal: changed ? rawOcrAddress.trim() : ""
+                };
+            }
+
+            // 2. Ricerca Fuzzy online tramite Photon (tollerante agli errori di battitura OCR e centrata sul bias GPS)
+            try {
+                const queryText = `${parsed.street}${parsed.houseNumber ? " " + parsed.houseNumber : ""}${parsed.city ? ", " + parsed.city : ""}`;
+                let url = `https://photon.komoot.io/api/?q=${encodeURIComponent(queryText)}&limit=5&lang=it`;
+                if (biasGeo && Number.isFinite(biasGeo.lat) && Number.isFinite(biasGeo.lon)) {
+                    url += `&lat=${biasGeo.lat.toFixed(4)}&lon=${biasGeo.lon.toFixed(4)}`;
+                }
+
+                const res = await fetchWithTimeout(url, 4500);
+                if (res.ok) {
+                    const data = await res.json();
+                    const features = Array.isArray(data?.features) ? data.features : [];
+                    let bestOnline = null;
+                    let bestOnlineScore = 0;
+
+                    for (const feat of features) {
+                        const props = feat?.properties || {};
+                        const coords = feat?.geometry?.coordinates;
+                        const street = (props.street || props.name || "").trim();
+                        if (!street || !Array.isArray(coords)) continue;
+
+                        const lat = parseFloat(coords[1]);
+                        const lon = parseFloat(coords[0]);
+                        const distKm = (biasGeo && Number.isFinite(lat) && Number.isFinite(lon))
+                            ? haversineKm(biasGeo.lat, biasGeo.lon, lat, lon)
+                            : 0;
+                        if (distKm > 45) continue;
+
+                        const city = (props.city || props.town || props.village || props.municipality || props.locality || "").trim();
+                        if (parsed.explicitCity && city) {
+                            const cA = parsed.explicitCity.toLowerCase();
+                            const cB = city.toLowerCase();
+                            if (!cA.includes(cB) && !cB.includes(cA)) continue;
+                        }
+
+                        const sim = computeStreetSimilarity(parsed.street, street);
+                        const totalRank = sim - Math.min(0.12, distKm * 0.002);
+                        if (sim >= 0.72 && totalRank > bestOnlineScore) {
+                            bestOnlineScore = totalRank;
+                            const osmHouse = (props.housenumber || "").trim();
+                            const effectiveHouse = parsed.houseNumber || osmHouse;
+                            const effectiveCity = parsed.explicitCity || city || defaultCity;
+                            bestOnline = {
+                                address: `${street}${effectiveHouse ? " " + effectiveHouse : ""}, ${effectiveCity}`,
+                                lat,
+                                lon,
+                                exactCivic: Boolean(osmHouse) && (!parsed.houseNumber || houseNumbersMatch(osmHouse, parsed.houseNumber))
+                            };
+                        }
+                    }
+
+                    if (bestOnline) {
+                        // Salva subito in cache se ha coordinate valide
+                        const cacheKey = bestOnline.address.trim().toLowerCase();
+                        const geoCache = loadGeoCache();
+                        if (!geoCache[cacheKey]) {
+                            geoCache[cacheKey] = {
+                                lat: bestOnline.lat,
+                                lon: bestOnline.lon,
+                                displayName: bestOnline.address,
+                                exactCivic: bestOnline.exactCivic
+                            };
+                            saveGeoCache(geoCache);
+                        }
+
+                        const changed = bestOnline.address.toLowerCase() !== rawOcrAddress.trim().toLowerCase();
+                        return {
+                            address: bestOnline.address,
+                            ocrOriginal: changed ? rawOcrAddress.trim() : ""
+                        };
+                    }
+                }
+            } catch {
+                // In caso di offline o timeout mantiene il testo pulito dall'OCR
+            }
+
+            return { address: rawOcrAddress.trim(), ocrOriginal: "" };
+        }
+
+        /**
+         * Esegue Tesseract.js OCR 100% locale su tutte le foto caricate, corregge gli errori tramite ricerca fuzzy
+         * e unisce gli indirizzi agli eventuali inserimenti manuali
          */
         async function runOfflineOCR() {
             if (!Array.isArray(appState.uploadedImages) || appState.uploadedImages.length === 0) {
@@ -2678,7 +3025,8 @@
                 .map(item => ({
                     address: item.address.trim(),
                     priority: item.priority,
-                    note: item.note.trim()
+                    note: item.note.trim(),
+                    ocrOriginal: ""
                 }))
                 .filter(item => item.address.length >= 4);
 
@@ -2696,14 +3044,14 @@
             progressBar.style.width = "8%";
 
             try {
-                const extractedFromPhotos = [];
-                const seenLower = new Set(manualItems.map(m => m.address.toLowerCase()));
+                const rawExtractedFromPhotos = [];
+                const seenRawLower = new Set(manualItems.map(m => m.address.toLowerCase()));
 
                 for (let idx = 0; idx < totalImages; idx++) {
                     const imgObj = appState.uploadedImages[idx];
-                    const basePct = Math.round((idx / totalImages) * 100);
+                    const basePct = Math.round((idx / totalImages) * 80);
                     progressBar.style.width = `${Math.max(10, basePct)}%`;
-                    statusText.textContent = `Foto ${idx + 1}/${totalImages}: ottimizzazione immagine...`;
+                    statusText.textContent = `Foto ${idx + 1}/${totalImages}: ottimizzazione contrasto...`;
 
                     const processedImg = await preprocessImageForOCR(imgObj.dataUrl);
 
@@ -2711,7 +3059,7 @@
                         logger: (m) => {
                             if (m.status === "recognizing text" && typeof m.progress === "number") {
                                 const imgShare = (0.2 + m.progress * 0.8) / totalImages;
-                                const totalPct = Math.min(98, Math.round(((idx / totalImages) + imgShare) * 100));
+                                const totalPct = Math.min(82, Math.round(((idx / totalImages) + imgShare) * 82));
                                 progressBar.style.width = `${totalPct}%`;
                                 statusText.textContent = `Foto ${idx + 1}/${totalImages}: lettura indirizzi (${totalPct}%)...`;
                             } else if (m.status) {
@@ -2720,12 +3068,58 @@
                         }
                     });
 
-                    const detectedInPhoto = parseAddressesFromOCRText(result?.data?.text || "");
+                    const detectedInPhoto = parseAddressesFromOCRText(result?.data || result?.data?.text || "");
                     detectedInPhoto.forEach((addr) => {
                         const key = addr.trim().toLowerCase();
-                        if (key && !seenLower.has(key)) {
-                            seenLower.add(key);
-                            extractedFromPhotos.push(normalizeAddressItem(addr));
+                        if (key && !seenRawLower.has(key)) {
+                            seenRawLower.add(key);
+                            rawExtractedFromPhotos.push(addr);
+                        }
+                    });
+                }
+
+                // Determina coordinate di riferimento per la correzione fuzzy di prossimità
+                let biasGeo = { lat: 41.9028, lon: 12.4964 };
+                if (appState.useCurrentLocationStart && appState.currentGpsCoords && Number.isFinite(appState.currentGpsCoords.lat)) {
+                    biasGeo = { lat: appState.currentGpsCoords.lat, lon: appState.currentGpsCoords.lon };
+                } else {
+                    const startVal = (document.getElementById("input-start-address")?.value || DEFAULT_START).trim();
+                    const cache = loadGeoCache();
+                    const cachedStart = cache[startVal.toLowerCase()];
+                    if (cachedStart && Number.isFinite(cachedStart.lat)) {
+                        biasGeo = { lat: cachedStart.lat, lon: cachedStart.lon };
+                    } else if (startVal.length >= 4) {
+                        const resStart = await geocodeAddress(startVal).catch(() => ({ geo: null }));
+                        if (resStart?.geo && Number.isFinite(resStart.geo.lat)) {
+                            biasGeo = { lat: resStart.geo.lat, lon: resStart.geo.lon };
+                        }
+                    }
+                }
+
+                // Correzione fuzzy degli indirizzi estratti dall'OCR
+                const extractedFromPhotos = [];
+                const seenFinalLower = new Set(manualItems.map(m => m.address.toLowerCase()));
+                let autoCorrectedCount = 0;
+
+                if (rawExtractedFromPhotos.length > 0) {
+                    statusText.textContent = `Verifica e correzione intelligente di ${rawExtractedFromPhotos.length} indirizzi...`;
+                    progressBar.style.width = "90%";
+
+                    const matchedResults = await Promise.all(
+                        rawExtractedFromPhotos.map(rawAddr => findClosestValidAddress(rawAddr, biasGeo))
+                    );
+
+                    matchedResults.forEach((matched) => {
+                        const key = matched.address.trim().toLowerCase();
+                        if (key && !seenFinalLower.has(key)) {
+                            seenFinalLower.add(key);
+                            if (matched.ocrOriginal) autoCorrectedCount++;
+                            extractedFromPhotos.push({
+                                address: matched.address,
+                                priority: false,
+                                note: "",
+                                ocrOriginal: matched.ocrOriginal
+                            });
                         }
                     });
                 }
@@ -2735,15 +3129,19 @@
 
                 if (combinedAddresses.length === 0) {
                     showToast("Nessun indirizzo chiaro rilevato. Controlla o inserisci manualmente.", "warning");
-                    appState.rawAddresses = [{ address: "", priority: false, note: "" }];
-                } else if (manualItems.length > 0 && extractedFromPhotos.length > 0) {
-                    showToast(`Estratti ${extractedFromPhotos.length} indirizzi da ${totalImages} foto + ${manualItems.length} manuali!`, "success");
-                    appState.rawAddresses = combinedAddresses;
+                    appState.rawAddresses = [{ address: "", priority: false, note: "", ocrOriginal: "" }];
                 } else {
-                    showToast(
-                        `Estratti ${extractedFromPhotos.length} indirizzi da ${totalImages} ${totalImages === 1 ? "foto" : "foto"}!`,
-                        "success"
-                    );
+                    const correctionSuffix = autoCorrectedCount > 0
+                        ? ` (${autoCorrectedCount} ${autoCorrectedCount === 1 ? "corretto" : "corretti"} automaticamente)`
+                        : "";
+                    if (manualItems.length > 0 && extractedFromPhotos.length > 0) {
+                        showToast(`Estratti ${extractedFromPhotos.length} indirizzi + ${manualItems.length} manuali${correctionSuffix}!`, "success");
+                    } else {
+                        showToast(
+                            `Estratti ${extractedFromPhotos.length} indirizzi da ${totalImages} ${totalImages === 1 ? "foto" : "foto"}${correctionSuffix}!`,
+                            "success"
+                        );
+                    }
                     appState.rawAddresses = combinedAddresses;
                 }
 
@@ -2831,6 +3229,7 @@
             appState.rawAddresses.forEach((item, index) => {
                 const isPriority = Boolean(item.priority);
                 const hasNote = item.note.trim().length > 0;
+                const hasOcrCorrection = Boolean(item.ocrOriginal && item.ocrOriginal.trim().length > 0);
                 const row = document.createElement("div");
                 row.className = `p-1.5 rounded-2xl border transition-colors space-y-1.5 ${
                     isPriority ? "bg-amber-50/70 border-amber-300" : "bg-slate-50 border-slate-200"
@@ -2876,6 +3275,12 @@
                             </svg>
                         </button>
                     </div>
+                    ${hasOcrCorrection ? `
+                    <div class="pl-7 pr-1 flex items-center justify-between gap-2 text-[11px] bg-emerald-50/90 border border-emerald-200/80 rounded-xl px-2.5 py-1">
+                        <span class="text-emerald-800 font-semibold truncate">✨ Corretto da OCR: <span class="line-through opacity-75">${escapeHtml(item.ocrOriginal)}</span></span>
+                        <button type="button" data-step2-revert-ocr-idx="${index}" class="text-posteBlue font-extrabold hover:underline flex-shrink-0">Ripristina</button>
+                    </div>
+                    ` : ""}
                     <div class="step2-note-wrapper ${hasNote ? "" : "hidden"} pl-7 pr-1">
                         <input type="text"
                             value="${escapeHtml(item.note)}"
@@ -2954,6 +3359,18 @@
                     const idx = parseInt(e.currentTarget.dataset.removeIdx, 10);
                     appState.rawAddresses.splice(idx, 1);
                     renderStep2AddressInputs();
+                });
+            });
+
+            listContainer.querySelectorAll("button[data-step2-revert-ocr-idx]").forEach(btn => {
+                btn.addEventListener("click", (e) => {
+                    const idx = parseInt(e.currentTarget.dataset.step2RevertOcrIdx, 10);
+                    const original = appState.rawAddresses[idx]?.ocrOriginal;
+                    if (original) {
+                        appState.rawAddresses[idx].address = original;
+                        appState.rawAddresses[idx].ocrOriginal = "";
+                        renderStep2AddressInputs();
+                    }
                 });
             });
         }
@@ -4776,8 +5193,8 @@
                     }
                     syncStartLocationUI();
                     appState.rawAddresses = [
-                        ...parsed.stops.map(s => ({ address: s.address, priority: Boolean(s.priority), note: s.note || "" })),
-                        ...(parsed.anomalies || []).map(a => ({ address: a.address, priority: Boolean(a.priority), note: a.note || "" }))
+                        ...parsed.stops.map(s => ({ address: s.address, priority: Boolean(s.priority), note: s.note || "", ocrOriginal: "" })),
+                        ...(parsed.anomalies || []).map(a => ({ address: a.address, priority: Boolean(a.priority), note: a.note || "", ocrOriginal: "" }))
                     ];
                     return true;
                 }

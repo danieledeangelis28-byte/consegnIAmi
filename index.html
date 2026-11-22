@@ -373,7 +373,7 @@
                     </div>
                 </div>
 
-                <!-- Barra Mappa Locale Offline su richiesta -->
+                <!-- Barra Mappa Locale Offline su IndexedDB -->
                 <div class="pt-2.5 border-t border-slate-100 flex items-center justify-between gap-2.5">
                     <div class="flex items-center gap-2.5 min-w-0">
                         <div class="w-8 h-8 rounded-xl bg-blue-50 text-posteBlue border border-blue-200/80 flex items-center justify-center flex-shrink-0">
@@ -382,7 +382,10 @@
                             </svg>
                         </div>
                         <div class="min-w-0">
-                            <p class="text-xs font-extrabold text-slate-800 truncate">Mappa Locale Offline</p>
+                            <div class="flex items-center gap-1.5">
+                                <p class="text-xs font-extrabold text-slate-800 truncate">Mappa Locale Offline</p>
+                                <span class="text-[9px] font-extrabold px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-800">IndexedDB</span>
+                            </div>
                             <p id="offline-atlas-summary" class="text-[11px] font-medium text-slate-500 truncate">Nessuna area scaricata</p>
                         </div>
                     </div>
@@ -521,7 +524,7 @@
                 <div class="flex items-center justify-between">
                     <div>
                         <h2 class="text-base font-extrabold text-slate-800">Verifica Indirizzi Estratti</h2>
-                        <p class="text-xs text-slate-500">Controlla, segna priorità (★) o modifica le tappe.</p>
+                        <p class="text-xs text-slate-500">Controlla, segna priorità (★) o aggiungi note (📝).</p>
                     </div>
                     <span id="badge-address-count" class="bg-posteBlue text-posteYellow text-xs font-extrabold px-2.5 py-1 rounded-full tabular-nums">0</span>
                 </div>
@@ -684,7 +687,7 @@
                 <div class="p-4 border-b border-slate-100 flex items-center justify-between gap-2">
                     <div class="min-w-0">
                         <h2 class="text-sm font-extrabold text-slate-800 uppercase tracking-wide">Sequenza Consegne</h2>
-                        <p class="text-[11px] text-slate-500">Spunta i pacchi o ricalcola da dove sei</p>
+                        <p class="text-[11px] text-slate-500">Spunta i pacchi, aggiungi note o ricalcola da dove sei</p>
                     </div>
                     <div class="flex items-center gap-1.5 flex-shrink-0">
                         <button type="button" id="btn-reoptimize-from-here"
@@ -954,7 +957,7 @@
             <!-- Zone già scaricate sul dispositivo -->
             <div id="offline-saved-regions-wrapper" class="hidden space-y-1.5">
                 <div class="flex items-center justify-between">
-                    <span class="text-[11px] font-extrabold uppercase tracking-wide text-slate-600">Zone già in memoria</span>
+                    <span class="text-[11px] font-extrabold uppercase tracking-wide text-slate-600">Zone già in memoria (IndexedDB)</span>
                     <button type="button" id="btn-clear-offline-atlas" class="text-[11px] font-bold text-red-600 hover:underline">
                         Svuota tutto
                     </button>
@@ -997,6 +1000,19 @@
             ACTIVE_SHIFT: "poste_opt_active_shift_v2",
             GEO_CACHE: "poste_opt_geocache_v2",
             OFFLINE_ATLAS: "poste_opt_offline_atlas_v1"
+        };
+
+        const OFFLINE_IDB_CONFIG = {
+            DB_NAME: "ConsegnIA_OfflineAtlasDB",
+            DB_VERSION: 1,
+            STORE_NAME: "atlasStore",
+            RECORD_KEY: "main_atlas"
+        };
+
+        let offlineAtlasMemory = {
+            regions: [],
+            streets: {},
+            roads: {}
         };
 
         const DEFAULT_START = "Via degli Arcelli, Roma";
@@ -1045,19 +1061,20 @@
         let lastGeocodeTimestamp = 0;
 
         /**
-         * Normalizza ogni elemento indirizzo nel formato { address, priority }
+         * Normalizza ogni elemento indirizzo nel formato { address, priority, note }
          */
         function normalizeAddressItem(item) {
             if (typeof item === "string") {
-                return { address: item, priority: false };
+                return { address: item, priority: false, note: "" };
             }
             if (item && typeof item === "object") {
                 return {
                     address: typeof item.address === "string" ? item.address : "",
-                    priority: Boolean(item.priority)
+                    priority: Boolean(item.priority),
+                    note: typeof item.note === "string" ? item.note : ""
                 };
             }
-            return { address: "", priority: false };
+            return { address: "", priority: false, note: "" };
         }
 
         /**
@@ -1244,7 +1261,7 @@
             try {
                 if (navigator.permissions && typeof navigator.permissions.query === "function") {
                     const status = await navigator.permissions.query({ name: "geolocation" });
-                    return status.state; // "granted" | "prompt" | "denied"
+                    return status.state;
                 }
             } catch {
                 // Alcuni browser mobile non supportano permissions.query per geolocation
@@ -1754,7 +1771,7 @@
                 }
 
                 lines.forEach(addr => {
-                    appState.manualAddresses.push({ address: addr, priority: isPriority });
+                    appState.manualAddresses.push({ address: addr, priority: isPriority, note: "" });
                 });
                 singleManualInput.value = "";
                 setSinglePriorityVisual(false);
@@ -1788,7 +1805,7 @@
                 const pendingText = singleManualInput.value.trim();
                 if (pendingText.length >= 3) {
                     const isPriority = singleManualPriorityBtn.dataset.priority === "true";
-                    appState.manualAddresses.push({ address: pendingText, priority: isPriority });
+                    appState.manualAddresses.push({ address: pendingText, priority: isPriority, note: "" });
                     singleManualInput.value = "";
                     setSinglePriorityVisual(false);
                     hideSuggestions();
@@ -1797,7 +1814,11 @@
 
                 const validItems = appState.manualAddresses
                     .map(normalizeAddressItem)
-                    .map(item => ({ address: item.address.trim(), priority: item.priority }))
+                    .map(item => ({
+                        address: item.address.trim(),
+                        priority: item.priority,
+                        note: item.note.trim()
+                    }))
                     .filter(item => item.address.length >= 4);
 
                 if (validItems.length === 0) {
@@ -2387,6 +2408,7 @@
 
         /**
          * Renderizza una casella di testo dedicata per ogni indirizzo inserito manualmente nello Step 1
+         * con possibilità di aggiungere una nota libera per il pacco
          */
         function renderManualAddressBoxes() {
             const listContainer = document.getElementById("manual-addresses-list");
@@ -2398,48 +2420,66 @@
                 const item = normalizeAddressItem(rawItem);
                 appState.manualAddresses[index] = item;
                 const isPriority = Boolean(item.priority);
+                const hasNote = item.note.trim().length > 0;
 
                 const row = document.createElement("div");
-                row.className = `flex items-center gap-1.5 p-1.5 rounded-2xl border transition-colors ${
+                row.className = `p-1.5 rounded-2xl border transition-colors space-y-1.5 ${
                     isPriority ? "bg-amber-50/70 border-amber-300" : "bg-slate-50 border-slate-200"
                 }`;
                 row.innerHTML = `
-                    <span class="w-6 h-6 rounded-full tabular-nums ${isPriority ? "bg-amber-400 text-slate-950" : "bg-blue-100 text-posteBlue"} text-xs font-extrabold flex items-center justify-center flex-shrink-0">
-                        ${index + 1}
-                    </span>
-                    <button type="button"
-                        data-manual-priority-idx="${index}"
-                        title="${isPriority ? "Rimuovi priorità" : "Segna come prioritario"}"
-                        class="p-2 rounded-xl ${isPriority ? "bg-amber-100 text-amber-500 border border-amber-300" : "bg-white text-slate-400 hover:text-amber-500 border border-slate-200"} transition-colors flex-shrink-0">
-                        <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" viewBox="0 0 24 24" fill="${isPriority ? "currentColor" : "none"}" stroke="currentColor" stroke-width="2.2">
-                            <path stroke-linecap="round" stroke-linejoin="round" d="M11.049 2.927c.3-.921 1.603-.921 1.902 0l1.519 4.674a1 1 0 00.95.69h4.915c.969 0 1.371 1.24.588 1.81l-3.976 2.888a1 1 0 00-.363 1.118l1.518 4.674c.3.922-.755 1.688-1.538 1.118l-3.976-2.888a1 1 0 00-1.176 0l-3.976 2.888c-.783.57-1.838-.197-1.538-1.118l1.518-4.674a1 1 0 00-.363-1.118l-3.976-2.888c-.784-.57-.38-1.81.588-1.81h4.914a1 1 0 00.951-.69l1.519-4.674z" />
-                        </svg>
-                    </button>
-                    <input type="text"
-                        value="${escapeHtml(item.address)}"
-                        data-manual-idx="${index}"
-                        placeholder="Es. Via Cornelia 164, Roma"
-                        class="manual-addr-item-input flex-1 min-w-0 px-3 py-2 bg-white border border-slate-300 rounded-xl text-sm font-semibold text-slate-800 focus:outline-none focus:ring-2 focus:ring-posteBlue">
-                    <button type="button"
-                        data-manual-roma-idx="${index}"
-                        title='Aggiungi ", Roma"'
-                        class="manual-row-roma-btn hidden px-2 py-2 bg-blue-50 hover:bg-blue-100 active:bg-blue-200 text-posteBlue border border-posteBlue/25 font-extrabold text-[11px] rounded-xl transition-all flex-shrink-0">
-                        + , Roma
-                    </button>
-                    <button type="button"
-                        data-manual-remove-idx="${index}"
-                        title="Rimuovi indirizzo"
-                        class="p-2 rounded-xl bg-red-50 hover:bg-red-100 text-red-600 transition-colors flex-shrink-0">
-                        <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.2">
-                            <path stroke-linecap="round" stroke-linejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-                        </svg>
-                    </button>
+                    <div class="flex items-center gap-1.5">
+                        <span class="w-6 h-6 rounded-full tabular-nums ${isPriority ? "bg-amber-400 text-slate-950" : "bg-blue-100 text-posteBlue"} text-xs font-extrabold flex items-center justify-center flex-shrink-0">
+                            ${index + 1}
+                        </span>
+                        <button type="button"
+                            data-manual-priority-idx="${index}"
+                            title="${isPriority ? "Rimuovi priorità" : "Segna come prioritario"}"
+                            class="p-2 rounded-xl ${isPriority ? "bg-amber-100 text-amber-500 border border-amber-300" : "bg-white text-slate-400 hover:text-amber-500 border border-slate-200"} transition-colors flex-shrink-0">
+                            <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" viewBox="0 0 24 24" fill="${isPriority ? "currentColor" : "none"}" stroke="currentColor" stroke-width="2.2">
+                                <path stroke-linecap="round" stroke-linejoin="round" d="M11.049 2.927c.3-.921 1.603-.921 1.902 0l1.519 4.674a1 1 0 00.95.69h4.915c.969 0 1.371 1.24.588 1.81l-3.976 2.888a1 1 0 00-.363 1.118l1.518 4.674c.3.922-.755 1.688-1.538 1.118l-3.976-2.888a1 1 0 00-1.176 0l-3.976 2.888c-.783.57-1.838-.197-1.538-1.118l1.518-4.674a1 1 0 00-.363-1.118l-3.976-2.888c-.784-.57-.38-1.81.588-1.81h4.914a1 1 0 00.951-.69l1.519-4.674z" />
+                            </svg>
+                        </button>
+                        <input type="text"
+                            value="${escapeHtml(item.address)}"
+                            data-manual-idx="${index}"
+                            placeholder="Es. Via Cornelia 164, Roma"
+                            class="manual-addr-item-input flex-1 min-w-0 px-3 py-2 bg-white border border-slate-300 rounded-xl text-sm font-semibold text-slate-800 focus:outline-none focus:ring-2 focus:ring-posteBlue">
+                        <button type="button"
+                            data-manual-roma-idx="${index}"
+                            title='Aggiungi ", Roma"'
+                            class="manual-row-roma-btn hidden px-2 py-2 bg-blue-50 hover:bg-blue-100 active:bg-blue-200 text-posteBlue border border-posteBlue/25 font-extrabold text-[11px] rounded-xl transition-all flex-shrink-0">
+                            + , Roma
+                        </button>
+                        <button type="button"
+                            data-manual-toggle-note-idx="${index}"
+                            title="Aggiungi o modifica nota pacco"
+                            class="p-2 rounded-xl ${hasNote ? "bg-blue-100 text-posteBlue border border-posteBlue/30" : "bg-white text-slate-500 hover:text-posteBlue border border-slate-200"} transition-colors flex-shrink-0">
+                            <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.2">
+                                <path stroke-linecap="round" stroke-linejoin="round" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+                            </svg>
+                        </button>
+                        <button type="button"
+                            data-manual-remove-idx="${index}"
+                            title="Rimuovi indirizzo"
+                            class="p-2 rounded-xl bg-red-50 hover:bg-red-100 text-red-600 transition-colors flex-shrink-0">
+                            <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.2">
+                                <path stroke-linecap="round" stroke-linejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                            </svg>
+                        </button>
+                    </div>
+                    <div class="manual-note-wrapper ${hasNote ? "" : "hidden"} pl-7 pr-1">
+                        <input type="text"
+                            value="${escapeHtml(item.note)}"
+                            data-manual-note-idx="${index}"
+                            placeholder="Nota pacco (es. citofono, piano, lasciare a...)"
+                            class="manual-note-item-input w-full px-3 py-1.5 bg-white border border-blue-200 rounded-xl text-xs font-medium text-slate-700 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-posteBlue">
+                    </div>
                 `;
                 listContainer.appendChild(row);
             });
 
             listContainer.querySelectorAll(".manual-addr-item-input").forEach(input => {
-                const row = input.closest("div");
+                const row = input.closest("div.p-1\\.5");
                 const romaBtn = row ? row.querySelector(".manual-row-roma-btn") : null;
 
                 input.addEventListener("input", (e) => {
@@ -2473,6 +2513,33 @@
                         input.setSelectionRange(len, len);
                     });
                 }
+            });
+
+            listContainer.querySelectorAll(".manual-note-item-input").forEach(noteInput => {
+                noteInput.addEventListener("input", (e) => {
+                    const idx = parseInt(e.target.dataset.manualNoteIdx, 10);
+                    appState.manualAddresses[idx].note = e.target.value;
+                    const row = e.target.closest("div.p-1\\.5");
+                    const toggleBtn = row?.querySelector("button[data-manual-toggle-note-idx]");
+                    const filled = e.target.value.trim().length > 0;
+                    if (toggleBtn) {
+                        toggleBtn.className = `p-2 rounded-xl ${filled ? "bg-blue-100 text-posteBlue border border-posteBlue/30" : "bg-white text-slate-500 hover:text-posteBlue border border-slate-200"} transition-colors flex-shrink-0`;
+                    }
+                });
+            });
+
+            listContainer.querySelectorAll("button[data-manual-toggle-note-idx]").forEach(btn => {
+                btn.addEventListener("click", (e) => {
+                    const row = e.currentTarget.closest("div.p-1\\.5");
+                    const wrapper = row?.querySelector(".manual-note-wrapper");
+                    const noteInput = row?.querySelector(".manual-note-item-input");
+                    if (wrapper) {
+                        wrapper.classList.toggle("hidden");
+                        if (!wrapper.classList.contains("hidden")) {
+                            noteInput?.focus();
+                        }
+                    }
+                });
             });
 
             listContainer.querySelectorAll("button[data-manual-priority-idx]").forEach(btn => {
@@ -2599,7 +2666,8 @@
                 const isPriority = singleManualPriorityBtn?.dataset.priority === "true";
                 appState.manualAddresses.push({
                     address: singleManualInput.value.trim(),
-                    priority: isPriority
+                    priority: isPriority,
+                    note: ""
                 });
                 singleManualInput.value = "";
                 renderManualAddressBoxes();
@@ -2607,7 +2675,11 @@
 
             const manualItems = appState.manualAddresses
                 .map(normalizeAddressItem)
-                .map(item => ({ address: item.address.trim(), priority: item.priority }))
+                .map(item => ({
+                    address: item.address.trim(),
+                    priority: item.priority,
+                    note: item.note.trim()
+                }))
                 .filter(item => item.address.length >= 4);
 
             const btnExtract = document.getElementById("btn-extract-ocr-offline");
@@ -2663,7 +2735,7 @@
 
                 if (combinedAddresses.length === 0) {
                     showToast("Nessun indirizzo chiaro rilevato. Controlla o inserisci manualmente.", "warning");
-                    appState.rawAddresses = [{ address: "", priority: false }];
+                    appState.rawAddresses = [{ address: "", priority: false, note: "" }];
                 } else if (manualItems.length > 0 && extractedFromPhotos.length > 0) {
                     showToast(`Estratti ${extractedFromPhotos.length} indirizzi da ${totalImages} foto + ${manualItems.length} manuali!`, "success");
                     appState.rawAddresses = combinedAddresses;
@@ -2693,7 +2765,7 @@
          */
         function initStep2Controls() {
             document.getElementById("btn-add-address-row").addEventListener("click", () => {
-                appState.rawAddresses.push({ address: "", priority: false });
+                appState.rawAddresses.push({ address: "", priority: false, note: "" });
                 renderStep2AddressInputs();
                 const inputs = document.querySelectorAll("#step2-addresses-list .step2-addr-input");
                 if (inputs.length > 0) {
@@ -2706,9 +2778,9 @@
                 appState.rawAddresses = appState.rawAddresses.map(raw => {
                     const item = normalizeAddressItem(raw);
                     const trimmed = item.address.trim();
-                    if (!trimmed) return { address: "", priority: item.priority };
-                    if (/,\s*[a-zA-Zàèéìòù\s]+$/.test(trimmed)) return { address: trimmed, priority: item.priority };
-                    return { address: `${trimmed}, ${defaultCity}`, priority: item.priority };
+                    if (!trimmed) return { address: "", priority: item.priority, note: item.note };
+                    if (/,\s*[a-zA-Zàèéìòù\s]+$/.test(trimmed)) return { address: trimmed, priority: item.priority, note: item.note };
+                    return { address: `${trimmed}, ${defaultCity}`, priority: item.priority, note: item.note };
                 });
                 renderStep2AddressInputs();
                 showToast(`Aggiunto ", ${defaultCity}" agli indirizzi senza comune`, "info");
@@ -2717,7 +2789,11 @@
             document.getElementById("btn-calculate-route").addEventListener("click", () => {
                 const cleaned = appState.rawAddresses
                     .map(normalizeAddressItem)
-                    .map(item => ({ address: item.address.trim(), priority: item.priority }))
+                    .map(item => ({
+                        address: item.address.trim(),
+                        priority: item.priority,
+                        note: item.note.trim()
+                    }))
                     .filter(item => item.address.length >= 4);
 
                 if (cleaned.length === 0) {
@@ -2740,7 +2816,7 @@
             if (!listContainer) return;
 
             if (appState.rawAddresses.length === 0) {
-                appState.rawAddresses = [{ address: "", priority: false }];
+                appState.rawAddresses = [{ address: "", priority: false, note: "" }];
             }
 
             appState.rawAddresses = appState.rawAddresses.map(normalizeAddressItem);
@@ -2754,51 +2830,90 @@
 
             appState.rawAddresses.forEach((item, index) => {
                 const isPriority = Boolean(item.priority);
+                const hasNote = item.note.trim().length > 0;
                 const row = document.createElement("div");
-                row.className = `flex items-center gap-1.5 p-1.5 rounded-2xl border transition-colors ${
+                row.className = `p-1.5 rounded-2xl border transition-colors space-y-1.5 ${
                     isPriority ? "bg-amber-50/70 border-amber-300" : "bg-slate-50 border-slate-200"
                 }`;
                 row.innerHTML = `
-                    <span class="w-6 h-6 rounded-full tabular-nums ${isPriority ? "bg-amber-400 text-slate-950" : "bg-blue-100 text-posteBlue"} text-xs font-extrabold flex items-center justify-center flex-shrink-0">
-                        ${index + 1}
-                    </span>
-                    <button type="button"
-                        data-step2-priority-idx="${index}"
-                        title="${isPriority ? "Rimuovi priorità" : "Segna come prioritario"}"
-                        class="p-2 rounded-xl ${isPriority ? "bg-amber-100 text-amber-500 border border-amber-300" : "bg-white text-slate-400 hover:text-amber-500 border border-slate-200"} transition-colors flex-shrink-0">
-                        <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" viewBox="0 0 24 24" fill="${isPriority ? "currentColor" : "none"}" stroke="currentColor" stroke-width="2.2">
-                            <path stroke-linecap="round" stroke-linejoin="round" d="M11.049 2.927c.3-.921 1.603-.921 1.902 0l1.519 4.674a1 1 0 00.95.69h4.915c.969 0 1.371 1.24.588 1.81l-3.976 2.888a1 1 0 00-.363 1.118l1.518 4.674c.3.922-.755 1.688-1.538 1.118l-3.976-2.888a1 1 0 00-1.176 0l-3.976 2.888c-.783.57-1.838-.197-1.538-1.118l1.518-4.674a1 1 0 00-.363-1.118l-3.976-2.888c-.784-.57-.38-1.81.588-1.81h4.914a1 1 0 00.951-.69l1.519-4.674z" />
-                        </svg>
-                    </button>
-                    <input type="text"
-                        value="${escapeHtml(item.address)}"
-                        data-addr-idx="${index}"
-                        placeholder="Es. Via Cornelia 164, Roma"
-                        class="step2-addr-input flex-1 min-w-0 px-3 py-2 bg-white border border-slate-300 rounded-xl text-sm font-semibold text-slate-800 focus:outline-none focus:ring-2 focus:ring-posteBlue">
-                    <button type="button"
-                        data-step2-roma-idx="${index}"
-                        title='Aggiungi ", Roma"'
-                        class="step2-row-roma-btn hidden px-2 py-2 bg-blue-50 hover:bg-blue-100 active:bg-blue-200 text-posteBlue border border-posteBlue/25 font-extrabold text-[11px] rounded-xl transition-all flex-shrink-0">
-                        + , Roma
-                    </button>
-                    <button type="button"
-                        data-remove-idx="${index}"
-                        title="Rimuovi indirizzo"
-                        class="p-2 rounded-xl bg-red-50 hover:bg-red-100 text-red-600 transition-colors flex-shrink-0">
-                        <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.2">
-                            <path stroke-linecap="round" stroke-linejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-                        </svg>
-                    </button>
+                    <div class="flex items-center gap-1.5">
+                        <span class="w-6 h-6 rounded-full tabular-nums ${isPriority ? "bg-amber-400 text-slate-950" : "bg-blue-100 text-posteBlue"} text-xs font-extrabold flex items-center justify-center flex-shrink-0">
+                            ${index + 1}
+                        </span>
+                        <button type="button"
+                            data-step2-priority-idx="${index}"
+                            title="${isPriority ? "Rimuovi priorità" : "Segna come prioritario"}"
+                            class="p-2 rounded-xl ${isPriority ? "bg-amber-100 text-amber-500 border border-amber-300" : "bg-white text-slate-400 hover:text-amber-500 border border-slate-200"} transition-colors flex-shrink-0">
+                            <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" viewBox="0 0 24 24" fill="${isPriority ? "currentColor" : "none"}" stroke="currentColor" stroke-width="2.2">
+                                <path stroke-linecap="round" stroke-linejoin="round" d="M11.049 2.927c.3-.921 1.603-.921 1.902 0l1.519 4.674a1 1 0 00.95.69h4.915c.969 0 1.371 1.24.588 1.81l-3.976 2.888a1 1 0 00-.363 1.118l1.518 4.674c.3.922-.755 1.688-1.538 1.118l-3.976-2.888a1 1 0 00-1.176 0l-3.976 2.888c-.783.57-1.838-.197-1.538-1.118l1.518-4.674a1 1 0 00-.363-1.118l-3.976-2.888c-.784-.57-.38-1.81.588-1.81h4.914a1 1 0 00.951-.69l1.519-4.674z" />
+                            </svg>
+                        </button>
+                        <input type="text"
+                            value="${escapeHtml(item.address)}"
+                            data-addr-idx="${index}"
+                            placeholder="Es. Via Cornelia 164, Roma"
+                            class="step2-addr-input flex-1 min-w-0 px-3 py-2 bg-white border border-slate-300 rounded-xl text-sm font-semibold text-slate-800 focus:outline-none focus:ring-2 focus:ring-posteBlue">
+                        <button type="button"
+                            data-step2-roma-idx="${index}"
+                            title='Aggiungi ", Roma"'
+                            class="step2-row-roma-btn hidden px-2 py-2 bg-blue-50 hover:bg-blue-100 active:bg-blue-200 text-posteBlue border border-posteBlue/25 font-extrabold text-[11px] rounded-xl transition-all flex-shrink-0">
+                            + , Roma
+                        </button>
+                        <button type="button"
+                            data-step2-toggle-note-idx="${index}"
+                            title="Aggiungi o modifica nota pacco"
+                            class="p-2 rounded-xl ${hasNote ? "bg-blue-100 text-posteBlue border border-posteBlue/30" : "bg-white text-slate-500 hover:text-posteBlue border border-slate-200"} transition-colors flex-shrink-0">
+                            <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.2">
+                                <path stroke-linecap="round" stroke-linejoin="round" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+                            </svg>
+                        </button>
+                        <button type="button"
+                            data-remove-idx="${index}"
+                            title="Rimuovi indirizzo"
+                            class="p-2 rounded-xl bg-red-50 hover:bg-red-100 text-red-600 transition-colors flex-shrink-0">
+                            <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.2">
+                                <path stroke-linecap="round" stroke-linejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                            </svg>
+                        </button>
+                    </div>
+                    <div class="step2-note-wrapper ${hasNote ? "" : "hidden"} pl-7 pr-1">
+                        <input type="text"
+                            value="${escapeHtml(item.note)}"
+                            data-step2-note-idx="${index}"
+                            placeholder="Nota pacco (es. citofono, piano, lasciare a...)"
+                            class="step2-note-input w-full px-3 py-1.5 bg-white border border-blue-200 rounded-xl text-xs font-medium text-slate-700 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-posteBlue">
+                    </div>
                 `;
                 listContainer.appendChild(row);
 
                 const input = row.querySelector(".step2-addr-input");
                 const romaBtn = row.querySelector(".step2-row-roma-btn");
+                const noteWrapper = row.querySelector(".step2-note-wrapper");
+                const noteInput = row.querySelector(".step2-note-input");
+                const toggleNoteBtn = row.querySelector("button[data-step2-toggle-note-idx]");
 
                 input.addEventListener("input", (e) => {
                     const idx = parseInt(e.target.dataset.addrIdx, 10);
                     appState.rawAddresses[idx].address = e.target.value;
                     updateCountBadge();
+                });
+
+                noteInput?.addEventListener("input", (e) => {
+                    const idx = parseInt(e.target.dataset.step2NoteIdx, 10);
+                    appState.rawAddresses[idx].note = e.target.value;
+                    const filled = e.target.value.trim().length > 0;
+                    if (toggleNoteBtn) {
+                        toggleNoteBtn.className = `p-2 rounded-xl ${filled ? "bg-blue-100 text-posteBlue border border-posteBlue/30" : "bg-white text-slate-500 hover:text-posteBlue border border-slate-200"} transition-colors flex-shrink-0`;
+                    }
+                });
+
+                toggleNoteBtn?.addEventListener("click", () => {
+                    if (noteWrapper) {
+                        noteWrapper.classList.toggle("hidden");
+                        if (!noteWrapper.classList.contains("hidden")) {
+                            noteInput?.focus();
+                        }
+                    }
                 });
 
                 input.addEventListener("focus", () => {
@@ -2844,7 +2959,7 @@
         }
 
         /**
-         * Geocodifica Gratuita ad Alta Precisione (Stradario Locale Offline + Civici Esatti + Multi-Comune) con Cache Locale
+         * Geocodifica Gratuita ad Alta Precisione (Stradario Locale Offline su IndexedDB + Civici Esatti)
          */
         function loadGeoCache() {
             try {
@@ -2867,31 +2982,120 @@
         }
 
         /**
-         * Gestione Stradario Locale Scaricabile su Richiesta (Offline Atlas)
+         * Gestione Stradario Locale Scaricabile su Richiesta su IndexedDB (Offline Atlas)
+         * con cache sincrona in memoria per ricerche istantanee e migrazione automatica da localStorage
          */
-        function loadOfflineAtlas() {
-            try {
-                const parsed = JSON.parse(localStorage.getItem(STORAGE_KEYS.OFFLINE_ATLAS) || "null");
-                if (parsed && typeof parsed === "object") {
-                    return {
-                        regions: Array.isArray(parsed.regions) ? parsed.regions : [],
-                        streets: parsed.streets && typeof parsed.streets === "object" ? parsed.streets : {},
-                        roads: parsed.roads && typeof parsed.roads === "object" ? parsed.roads : {}
-                    };
+        function openOfflineAtlasDB() {
+            return new Promise((resolve, reject) => {
+                if (typeof indexedDB === "undefined") {
+                    reject(new Error("IndexedDB non supportato"));
+                    return;
                 }
-            } catch {
-                // Ignora
+                const request = indexedDB.open(OFFLINE_IDB_CONFIG.DB_NAME, OFFLINE_IDB_CONFIG.DB_VERSION);
+                request.onupgradeneeded = (event) => {
+                    const db = event.target.result;
+                    if (!db.objectStoreNames.contains(OFFLINE_IDB_CONFIG.STORE_NAME)) {
+                        db.createObjectStore(OFFLINE_IDB_CONFIG.STORE_NAME);
+                    }
+                };
+                request.onsuccess = () => resolve(request.result);
+                request.onerror = () => reject(request.error || new Error("Errore apertura IndexedDB"));
+            });
+        }
+
+        function sanitizeAtlasObject(parsed) {
+            if (parsed && typeof parsed === "object") {
+                return {
+                    regions: Array.isArray(parsed.regions) ? parsed.regions : [],
+                    streets: parsed.streets && typeof parsed.streets === "object" ? parsed.streets : {},
+                    roads: parsed.roads && typeof parsed.roads === "object" ? parsed.roads : {}
+                };
             }
             return { regions: [], streets: {}, roads: {} };
         }
 
-        function saveOfflineAtlas(atlas) {
+        async function readAtlasFromIndexedDB() {
+            const db = await openOfflineAtlasDB();
+            return new Promise((resolve, reject) => {
+                const tx = db.transaction(OFFLINE_IDB_CONFIG.STORE_NAME, "readonly");
+                const store = tx.objectStore(OFFLINE_IDB_CONFIG.STORE_NAME);
+                const req = store.get(OFFLINE_IDB_CONFIG.RECORD_KEY);
+                req.onsuccess = () => resolve(req.result || null);
+                req.onerror = () => reject(req.error);
+            });
+        }
+
+        async function writeAtlasToIndexedDB(atlas) {
+            const db = await openOfflineAtlasDB();
+            return new Promise((resolve, reject) => {
+                const tx = db.transaction(OFFLINE_IDB_CONFIG.STORE_NAME, "readwrite");
+                const store = tx.objectStore(OFFLINE_IDB_CONFIG.STORE_NAME);
+                const req = store.put(atlas, OFFLINE_IDB_CONFIG.RECORD_KEY);
+                req.onsuccess = () => resolve(true);
+                req.onerror = () => reject(req.error);
+            });
+        }
+
+        async function initOfflineAtlasStorage() {
             try {
-                localStorage.setItem(STORAGE_KEYS.OFFLINE_ATLAS, JSON.stringify(atlas));
+                const idbData = await readAtlasFromIndexedDB();
+                if (idbData) {
+                    offlineAtlasMemory = sanitizeAtlasObject(idbData);
+                    return offlineAtlasMemory;
+                }
+
+                // Migrazione automatica da eventuale vecchio salvataggio localStorage
+                const legacyRaw = localStorage.getItem(STORAGE_KEYS.OFFLINE_ATLAS);
+                if (legacyRaw) {
+                    const legacyParsed = sanitizeAtlasObject(JSON.parse(legacyRaw));
+                    offlineAtlasMemory = legacyParsed;
+                    await writeAtlasToIndexedDB(legacyParsed);
+                    localStorage.removeItem(STORAGE_KEYS.OFFLINE_ATLAS);
+                }
+            } catch (err) {
+                console.warn("Fallback lettura atlante offline:", err);
+                try {
+                    const fallbackRaw = localStorage.getItem(STORAGE_KEYS.OFFLINE_ATLAS);
+                    if (fallbackRaw) {
+                        offlineAtlasMemory = sanitizeAtlasObject(JSON.parse(fallbackRaw));
+                    }
+                } catch {
+                    // Ignora
+                }
+            }
+            return offlineAtlasMemory;
+        }
+
+        function loadOfflineAtlas() {
+            return offlineAtlasMemory;
+        }
+
+        async function saveOfflineAtlas(atlas) {
+            const sanitized = sanitizeAtlasObject(atlas);
+            offlineAtlasMemory = sanitized;
+            try {
+                await writeAtlasToIndexedDB(sanitized);
                 return true;
             } catch (err) {
-                console.warn("Memoria locale piena per stradario offline:", err);
+                console.warn("Errore scrittura stradario su IndexedDB:", err);
                 return false;
+            }
+        }
+
+        async function clearOfflineAtlasStorage() {
+            offlineAtlasMemory = { regions: [], streets: {}, roads: {} };
+            localStorage.removeItem(STORAGE_KEYS.OFFLINE_ATLAS);
+            try {
+                const db = await openOfflineAtlasDB();
+                await new Promise((resolve, reject) => {
+                    const tx = db.transaction(OFFLINE_IDB_CONFIG.STORE_NAME, "readwrite");
+                    const store = tx.objectStore(OFFLINE_IDB_CONFIG.STORE_NAME);
+                    const req = store.delete(OFFLINE_IDB_CONFIG.RECORD_KEY);
+                    req.onsuccess = () => resolve(true);
+                    req.onerror = () => reject(req.error);
+                });
+            } catch (err) {
+                console.warn("Errore pulizia IndexedDB:", err);
             }
         }
 
@@ -3527,6 +3731,7 @@
                         order: expanded.length + 1,
                         address: m.address,
                         priority: Boolean(m.priority),
+                        note: typeof m.note === "string" ? m.note : "",
                         lat: m.lat,
                         lon: m.lon,
                         wasAnomaly: Boolean(m.wasAnomaly),
@@ -4358,6 +4563,7 @@
                         anomalies.push({
                             address: addr,
                             priority: item.priority,
+                            note: item.note || "",
                             lat: geo.lat,
                             lon: geo.lon,
                             distanceKm: Math.round(distFromStartKm)
@@ -4366,6 +4572,7 @@
                         validStops.push({
                             address: addr,
                             priority: item.priority,
+                            note: item.note || "",
                             lat: geo.lat,
                             lon: geo.lon,
                             distanceKm: Math.round(distFromStartKm),
@@ -4569,8 +4776,8 @@
                     }
                     syncStartLocationUI();
                     appState.rawAddresses = [
-                        ...parsed.stops.map(s => ({ address: s.address, priority: Boolean(s.priority) })),
-                        ...(parsed.anomalies || []).map(a => ({ address: a.address, priority: Boolean(a.priority) }))
+                        ...parsed.stops.map(s => ({ address: s.address, priority: Boolean(s.priority), note: s.note || "" })),
+                        ...(parsed.anomalies || []).map(a => ({ address: a.address, priority: Boolean(a.priority), note: a.note || "" }))
                     ];
                     return true;
                 }
@@ -4909,7 +5116,8 @@
 
                 const row = document.createElement("div");
                 row.dataset.itemIdx = String(index);
-                row.className = `p-3 flex items-center gap-2 transition-all duration-200 ${
+                const hasNote = typeof stop.note === "string" && stop.note.trim().length > 0;
+                row.className = `p-3 transition-all duration-200 ${
                     stop.completed
                         ? "bg-slate-50/90"
                         : (isCurrentNext
@@ -4917,70 +5125,89 @@
                             : "bg-white hover:bg-slate-50/60")
                 }`;
                 row.innerHTML = `
-                    <button type="button"
-                        class="drag-handle touch-none cursor-grab active:cursor-grabbing p-1.5 text-slate-400 hover:text-posteBlue rounded-lg flex-shrink-0"
-                        title="Trascina per riordinare la tappa">
-                        <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="currentColor" viewBox="0 0 20 20">
-                            <path d="M7 4a1.5 1.5 0 11-3 0 1.5 1.5 0 013 0zm0 6a1.5 1.5 0 11-3 0 1.5 1.5 0 013 0zm0 6a1.5 1.5 0 11-3 0 1.5 1.5 0 013 0zm9-12a1.5 1.5 0 11-3 0 1.5 1.5 0 013 0zm0 6a1.5 1.5 0 11-3 0 1.5 1.5 0 013 0zm0 6a1.5 1.5 0 11-3 0 1.5 1.5 0 013 0z" />
-                        </svg>
-                    </button>
-
-                    <label class="flex items-center gap-2.5 flex-1 min-w-0 cursor-pointer select-none py-0.5">
-                        <input type="checkbox" class="delivery-checkbox hidden" data-stop-index="${index}" ${stop.completed ? "checked" : ""}>
-                        <div class="custom-check-box w-7 h-7 rounded-xl border-2 ${stop.completed ? "bg-green-600 border-green-600" : (isCurrentNext ? "border-posteBlue bg-white shadow-2xs" : "border-slate-300 bg-white")} flex items-center justify-center flex-shrink-0 transition-all duration-200">
-                            <svg class="check-icon ${stop.completed ? "block" : "hidden"} w-4 h-4 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M5 13l4 4L19 7"></path>
+                    <div class="flex items-center gap-2">
+                        <button type="button"
+                            class="drag-handle touch-none cursor-grab active:cursor-grabbing p-1.5 text-slate-400 hover:text-posteBlue rounded-lg flex-shrink-0"
+                            title="Trascina per riordinare la tappa">
+                            <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="currentColor" viewBox="0 0 20 20">
+                                <path d="M7 4a1.5 1.5 0 11-3 0 1.5 1.5 0 013 0zm0 6a1.5 1.5 0 11-3 0 1.5 1.5 0 013 0zm0 6a1.5 1.5 0 11-3 0 1.5 1.5 0 013 0zm9-12a1.5 1.5 0 11-3 0 1.5 1.5 0 013 0zm0 6a1.5 1.5 0 11-3 0 1.5 1.5 0 013 0zm0 6a1.5 1.5 0 11-3 0 1.5 1.5 0 013 0z" />
                             </svg>
-                        </div>
-                        <div class="stop-badge w-6 h-6 rounded-full tabular-nums ${stop.completed ? "bg-slate-200 text-slate-500" : (stop.priority ? "bg-amber-400 text-slate-950" : "bg-posteBlue text-white")} ${isCurrentNext ? "ring-2 ring-posteYellow ring-offset-1" : ""} font-extrabold text-xs flex items-center justify-center flex-shrink-0 transition-all duration-200">
-                            ${stop.order}
-                        </div>
-                        <div class="flex-1 min-w-0">
-                            <p class="stop-title text-sm font-bold leading-snug break-words transition-colors ${stop.completed ? "line-through text-slate-400" : (isCurrentNext ? "text-posteBlueDark font-extrabold" : "text-slate-800")}">${escapeHtml(stop.address)}</p>
-                            <div class="flex items-center gap-1.5 mt-0.5 flex-wrap">
-                                <span class="next-stop-pill ${isCurrentNext ? "inline-flex" : "hidden"} items-center gap-1 text-[10px] font-black uppercase tracking-wide px-2 py-0.5 rounded-full bg-posteBlue text-posteYellow shadow-2xs">
-                                    Prossima Tappa
-                                </span>
-                                <span class="walk-stop-pill ${walkInfo ? "inline-flex" : "hidden"} items-center gap-1 text-[10px] font-extrabold px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-900 border border-emerald-300/80">
-                                    ${escapeHtml(walkLabelText)}
-                                </span>
-                                <span class="text-[10px] font-bold px-1.5 py-0.5 rounded bg-slate-100 text-slate-600">Fase ${phaseNum}</span>
-                                ${stop.priority ? `<span class="text-[10px] font-extrabold px-1.5 py-0.5 rounded bg-amber-100 text-amber-800">★ Priorità</span>` : ""}
+                        </button>
+
+                        <label class="flex items-center gap-2.5 flex-1 min-w-0 cursor-pointer select-none py-0.5">
+                            <input type="checkbox" class="delivery-checkbox hidden" data-stop-index="${index}" ${stop.completed ? "checked" : ""}>
+                            <div class="custom-check-box w-7 h-7 rounded-xl border-2 ${stop.completed ? "bg-green-600 border-green-600" : (isCurrentNext ? "border-posteBlue bg-white shadow-2xs" : "border-slate-300 bg-white")} flex items-center justify-center flex-shrink-0 transition-all duration-200">
+                                <svg class="check-icon ${stop.completed ? "block" : "hidden"} w-4 h-4 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M5 13l4 4L19 7"></path>
+                                </svg>
                             </div>
+                            <div class="stop-badge w-6 h-6 rounded-full tabular-nums ${stop.completed ? "bg-slate-200 text-slate-500" : (stop.priority ? "bg-amber-400 text-slate-950" : "bg-posteBlue text-white")} ${isCurrentNext ? "ring-2 ring-posteYellow ring-offset-1" : ""} font-extrabold text-xs flex items-center justify-center flex-shrink-0 transition-all duration-200">
+                                ${stop.order}
+                            </div>
+                            <div class="flex-1 min-w-0">
+                                <p class="stop-title text-sm font-bold leading-snug break-words transition-colors ${stop.completed ? "line-through text-slate-400" : (isCurrentNext ? "text-posteBlueDark font-extrabold" : "text-slate-800")}">${escapeHtml(stop.address)}</p>
+                                <p class="stop-note-preview ${hasNote ? "" : "hidden"} text-xs font-semibold ${stop.completed ? "text-slate-400" : "text-posteBlue"} bg-blue-50/90 border border-blue-200/80 rounded-lg px-2 py-0.5 mt-1 break-words">📝 ${escapeHtml(stop.note || "")}</p>
+                                <div class="flex items-center gap-1.5 mt-1 flex-wrap">
+                                    <span class="next-stop-pill ${isCurrentNext ? "inline-flex" : "hidden"} items-center gap-1 text-[10px] font-black uppercase tracking-wide px-2 py-0.5 rounded-full bg-posteBlue text-posteYellow shadow-2xs">
+                                        Prossima Tappa
+                                    </span>
+                                    <span class="walk-stop-pill ${walkInfo ? "inline-flex" : "hidden"} items-center gap-1 text-[10px] font-extrabold px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-900 border border-emerald-300/80">
+                                        ${escapeHtml(walkLabelText)}
+                                    </span>
+                                    <span class="text-[10px] font-bold px-1.5 py-0.5 rounded bg-slate-100 text-slate-600">Fase ${phaseNum}</span>
+                                    ${stop.priority ? `<span class="text-[10px] font-extrabold px-1.5 py-0.5 rounded bg-amber-100 text-amber-800">★ Priorità</span>` : ""}
+                                </div>
+                            </div>
+                        </label>
+
+                        <div class="flex flex-col gap-1 flex-shrink-0">
+                            <button type="button"
+                                data-move-stop="up"
+                                data-stop-index="${index}"
+                                ${isFirst ? "disabled" : ""}
+                                title="Anticipa tappa"
+                                class="p-1 rounded-lg bg-slate-100 hover:bg-blue-100 text-slate-600 hover:text-posteBlue disabled:opacity-30 disabled:pointer-events-none transition-colors">
+                                <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5">
+                                    <path stroke-linecap="round" stroke-linejoin="round" d="M5 15l7-7 7 7" />
+                                </svg>
+                            </button>
+                            <button type="button"
+                                data-move-stop="down"
+                                data-stop-index="${index}"
+                                ${isLast ? "disabled" : ""}
+                                title="Posticipa tappa"
+                                class="p-1 rounded-lg bg-slate-100 hover:bg-blue-100 text-slate-600 hover:text-posteBlue disabled:opacity-30 disabled:pointer-events-none transition-colors">
+                                <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5">
+                                    <path stroke-linecap="round" stroke-linejoin="round" d="M19 9l-7 7-7-7" />
+                                </svg>
+                            </button>
                         </div>
-                    </label>
 
-                    <div class="flex flex-col gap-1 flex-shrink-0">
                         <button type="button"
-                            data-move-stop="up"
-                            data-stop-index="${index}"
-                            ${isFirst ? "disabled" : ""}
-                            title="Anticipa tappa"
-                            class="p-1 rounded-lg bg-slate-100 hover:bg-blue-100 text-slate-600 hover:text-posteBlue disabled:opacity-30 disabled:pointer-events-none transition-colors">
-                            <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5">
-                                <path stroke-linecap="round" stroke-linejoin="round" d="M5 15l7-7 7 7" />
+                            data-toggle-stop-note="${index}"
+                            title="Scrivi o modifica nota pacco"
+                            class="stop-note-toggle-btn p-2.5 rounded-xl ${hasNote ? "bg-blue-100 text-posteBlue border border-posteBlue/30" : "bg-slate-100 hover:bg-blue-50 text-slate-600 hover:text-posteBlue"} transition-all duration-200 flex-shrink-0">
+                            <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.2">
+                                <path stroke-linecap="round" stroke-linejoin="round" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
                             </svg>
                         </button>
-                        <button type="button"
-                            data-move-stop="down"
-                            data-stop-index="${index}"
-                            ${isLast ? "disabled" : ""}
-                            title="Posticipa tappa"
-                            class="p-1 rounded-lg bg-slate-100 hover:bg-blue-100 text-slate-600 hover:text-posteBlue disabled:opacity-30 disabled:pointer-events-none transition-colors">
-                            <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5">
-                                <path stroke-linecap="round" stroke-linejoin="round" d="M19 9l-7 7-7-7" />
+
+                        <a href="${singleNavUrl}" target="_blank" rel="noopener noreferrer"
+                            class="p-2.5 rounded-xl ${isCurrentNext ? "bg-posteYellow text-posteBlue shadow-xs" : "bg-slate-100 hover:bg-posteYellow text-posteBlue"} transition-all duration-200 flex-shrink-0"
+                            title="Naviga solo a questo indirizzo">
+                            <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.2">
+                                <path stroke-linecap="round" stroke-linejoin="round" d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z" />
+                                <path stroke-linecap="round" stroke-linejoin="round" d="M15 11a3 3 0 11-6 0 3 3 0 016 0z" />
                             </svg>
-                        </button>
+                        </a>
                     </div>
-
-                    <a href="${singleNavUrl}" target="_blank" rel="noopener noreferrer"
-                        class="p-2.5 rounded-xl ${isCurrentNext ? "bg-posteYellow text-posteBlue shadow-xs" : "bg-slate-100 hover:bg-posteYellow text-posteBlue"} transition-all duration-200 flex-shrink-0"
-                        title="Naviga solo a questo indirizzo">
-                        <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.2">
-                            <path stroke-linecap="round" stroke-linejoin="round" d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z" />
-                            <path stroke-linecap="round" stroke-linejoin="round" d="M15 11a3 3 0 11-6 0 3 3 0 016 0z" />
-                        </svg>
-                    </a>
+                    <div class="stop-note-editor hidden mt-2 pl-9 pr-1">
+                        <input type="text"
+                            value="${escapeHtml(stop.note || "")}"
+                            data-stop-note-input="${index}"
+                            placeholder="Scrivi nota libera per questo pacco..."
+                            class="w-full px-3 py-2 bg-white border border-posteBlue/40 rounded-xl text-xs font-semibold text-slate-800 focus:outline-none focus:ring-2 focus:ring-posteBlue">
+                    </div>
                 `;
                 sortableStopsWrapper.appendChild(row);
             });
@@ -5031,6 +5258,7 @@
                     const isNext = !isChecked && idx === currentNextIdx;
 
                     const titleEl = rowEl.querySelector(".stop-title");
+                    const notePreviewEl = rowEl.querySelector(".stop-note-preview");
                     const boxEl = rowEl.querySelector(".custom-check-box");
                     const iconEl = rowEl.querySelector(".check-icon");
                     const badgeEl = rowEl.querySelector(".stop-badge");
@@ -5068,6 +5296,8 @@
                         rowEl.classList.add("bg-slate-50/90");
                         titleEl.classList.add("line-through", "text-slate-400");
                         titleEl.classList.remove("text-slate-800", "text-posteBlueDark", "font-extrabold");
+                        notePreviewEl?.classList.add("text-slate-400");
+                        notePreviewEl?.classList.remove("text-posteBlue");
                         boxEl.classList.add("bg-green-600", "border-green-600");
                         boxEl.classList.remove("border-slate-300", "border-posteBlue", "bg-white", "shadow-2xs");
                         iconEl.classList.remove("hidden");
@@ -5081,6 +5311,8 @@
                         }
                     } else {
                         titleEl.classList.remove("line-through", "text-slate-400");
+                        notePreviewEl?.classList.remove("text-slate-400");
+                        notePreviewEl?.classList.add("text-posteBlue");
                         boxEl.classList.remove("bg-green-600", "border-green-600");
                         boxEl.classList.add("bg-white");
                         iconEl.classList.add("hidden");
@@ -5133,6 +5365,59 @@
                     updateChecklistProgressUI();
                     refreshAllChecklistRows();
                     renderInteractiveMap(appState.activeRoute, false);
+                });
+            });
+
+            sortableStopsWrapper.querySelectorAll("button[data-toggle-stop-note]").forEach(btn => {
+                btn.addEventListener("click", (e) => {
+                    const idx = parseInt(e.currentTarget.dataset.toggleStopNote, 10);
+                    const rowEl = sortableStopsWrapper.querySelector(`div[data-item-idx="${idx}"]`);
+                    const editorEl = rowEl?.querySelector(".stop-note-editor");
+                    const inputEl = rowEl?.querySelector("input[data-stop-note-input]");
+                    if (editorEl) {
+                        editorEl.classList.toggle("hidden");
+                        if (!editorEl.classList.contains("hidden")) {
+                            inputEl?.focus();
+                            const len = (inputEl?.value || "").length;
+                            inputEl?.setSelectionRange(len, len);
+                        }
+                    }
+                });
+            });
+
+            sortableStopsWrapper.querySelectorAll("input[data-stop-note-input]").forEach(inputEl => {
+                inputEl.addEventListener("input", (e) => {
+                    const idx = parseInt(e.target.dataset.stopNoteInput, 10);
+                    const val = e.target.value;
+                    appState.activeRoute.stops[idx].note = val;
+
+                    const activeVarIdx = appState.activeRoute.selectedVariantIndex;
+                    if (Array.isArray(appState.activeRoute.variants) && appState.activeRoute.variants[activeVarIdx]?.stops?.[idx]) {
+                        appState.activeRoute.variants[activeVarIdx].stops[idx].note = val;
+                    }
+                    saveActiveShiftToStorage();
+
+                    const rowEl = sortableStopsWrapper.querySelector(`div[data-item-idx="${idx}"]`);
+                    const previewEl = rowEl?.querySelector(".stop-note-preview");
+                    const toggleBtn = rowEl?.querySelector("button[data-toggle-stop-note]");
+                    const trimmed = val.trim();
+
+                    if (previewEl) {
+                        if (trimmed.length > 0) {
+                            previewEl.textContent = `📝 ${trimmed}`;
+                            previewEl.classList.remove("hidden");
+                        } else {
+                            previewEl.textContent = "";
+                            previewEl.classList.add("hidden");
+                        }
+                    }
+                    if (toggleBtn) {
+                        toggleBtn.className = `stop-note-toggle-btn p-2.5 rounded-xl ${
+                            trimmed.length > 0
+                                ? "bg-blue-100 text-posteBlue border border-posteBlue/30"
+                                : "bg-slate-100 hover:bg-blue-50 text-slate-600 hover:text-posteBlue"
+                        } transition-all duration-200 flex-shrink-0`;
+                    }
                 });
             });
         }
@@ -5366,7 +5651,8 @@
 
                 appState.rawAddresses = targetStops.map(s => ({
                     address: s.address,
-                    priority: Boolean(s.priority)
+                    priority: Boolean(s.priority),
+                    note: s.note || ""
                 }));
                 appState.useCurrentLocationStart = true;
                 syncStartLocationUI();
@@ -5376,8 +5662,8 @@
             document.getElementById("btn-edit-addresses-from-route").addEventListener("click", () => {
                 if (appState.activeRoute) {
                     appState.rawAddresses = [
-                        ...appState.activeRoute.stops.map(s => ({ address: s.address, priority: Boolean(s.priority) })),
-                        ...(appState.activeRoute.anomalies || []).map(a => ({ address: a.address, priority: Boolean(a.priority) }))
+                        ...appState.activeRoute.stops.map(s => ({ address: s.address, priority: Boolean(s.priority), note: s.note || "" })),
+                        ...(appState.activeRoute.anomalies || []).map(a => ({ address: a.address, priority: Boolean(a.priority), note: a.note || "" }))
                     ];
                 }
                 goToStep(2);
@@ -5484,7 +5770,7 @@
                     });
 
                     regionsList.querySelectorAll("button[data-remove-region-idx]").forEach(btn => {
-                        btn.addEventListener("click", (e) => {
+                        btn.addEventListener("click", async (e) => {
                             const idx = parseInt(e.currentTarget.dataset.removeRegionIdx, 10);
                             const currentAtlas = loadOfflineAtlas();
                             currentAtlas.regions.splice(idx, 1);
@@ -5492,7 +5778,7 @@
                                 currentAtlas.streets = {};
                                 currentAtlas.roads = {};
                             }
-                            saveOfflineAtlas(currentAtlas);
+                            await saveOfflineAtlas(currentAtlas);
                             updateOfflineAtlasSummaryUI();
                             drawSavedRegionsOnSelectorMap();
                             showToast("Zona rimossa", "info");
@@ -5911,7 +6197,7 @@
                 return;
             }
 
-            statusText.textContent = "Indicizzazione civici nella memoria locale...";
+            statusText.textContent = "Salvataggio civici su IndexedDB...";
             statusPct.textContent = "80%";
             statusBar.style.width = "80%";
 
@@ -5971,7 +6257,7 @@
                 updatedAt: Date.now()
             });
 
-            const savedOk = saveOfflineAtlas(atlas);
+            const savedOk = await saveOfflineAtlas(atlas);
             statusPct.textContent = "100%";
             statusBar.style.width = "100%";
 
@@ -5982,13 +6268,13 @@
             }, 350);
 
             if (!savedOk) {
-                showToast("Spazio memoria insufficiente. Prova a ridurre il riquadro.", "warning");
+                showToast("Spazio IndexedDB insufficiente sul dispositivo.", "warning");
                 return;
             }
 
             updateOfflineAtlasSummaryUI();
             drawSavedRegionsOnSelectorMap();
-            showToast(`Mappa locale salvata: +${addedCivics} civici e +${addedRoads} vie!`, "success");
+            showToast(`Mappa locale salvata su IndexedDB: +${addedCivics} civici e +${addedRoads} vie!`, "success");
         }
 
         function initOfflineMapDownloader() {
@@ -6111,8 +6397,8 @@
                 }
             });
 
-            document.getElementById("btn-clear-offline-atlas")?.addEventListener("click", () => {
-                localStorage.removeItem(STORAGE_KEYS.OFFLINE_ATLAS);
+            document.getElementById("btn-clear-offline-atlas")?.addEventListener("click", async () => {
+                await clearOfflineAtlasStorage();
                 updateOfflineAtlasSummaryUI();
                 drawSavedRegionsOnSelectorMap();
                 showToast("Mappa locale svuotata", "info");
@@ -6124,7 +6410,8 @@
         }
 
         // Avvio Applicazione
-        document.addEventListener("DOMContentLoaded", () => {
+        document.addEventListener("DOMContentLoaded", async () => {
+            await initOfflineAtlasStorage();
             initSettings();
             initGpsPermissionWatcher();
             initOfflineMapDownloader();

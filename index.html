@@ -259,7 +259,7 @@
                 </div>
                 <div>
                     <h1 class="text-base font-extrabold leading-tight tracking-tight">ConsegnIA</h1>
-                    <p class="text-[11px] text-blue-100/90 font-medium">Pianificatore Giro Consegne • v3.5</p>
+                    <p class="text-[11px] text-blue-100/90 font-medium">Pianificatore Giro Consegne • v3.6</p>
                 </div>
             </div>
 
@@ -529,6 +529,19 @@
                     <span id="badge-address-count" class="bg-posteBlue text-posteYellow text-xs font-extrabold px-2.5 py-1 rounded-full tabular-nums">0</span>
                 </div>
 
+                <!-- Avviso Indirizzi Non Localizzati (visibile al rientro dal calcolo se alcuni indirizzi sono falliti) -->
+                <div id="step2-notfound-banner" class="hidden bg-red-50 border-2 border-red-300 rounded-2xl p-3 space-y-1.5">
+                    <div class="flex items-center justify-between gap-2">
+                        <p id="step2-notfound-title" class="text-xs font-extrabold text-red-800 flex items-center gap-1.5">
+                            <span>⚠️ Alcuni indirizzi non sono stati localizzati</span>
+                        </p>
+                        <button type="button" id="btn-dismiss-step2-notfound" class="text-[11px] font-bold text-red-600 hover:underline">Chiudi</button>
+                    </div>
+                    <p class="text-[11px] text-red-700 leading-snug">
+                        Controlla le righe evidenziate in rosso qui sotto (verifica il nome della via o il comune) e premi di nuovo <strong>Calcola Percorso Ottimizzato</strong>.
+                    </p>
+                </div>
+
                 <!-- Selettore Partenza Rapida (Base salvata vs La mia posizione GPS) -->
                 <div id="step2-start-box" class="bg-blue-50/75 border border-posteBlue/20 rounded-2xl p-2.5 flex items-center justify-between gap-2">
                     <div class="flex items-center gap-2 min-w-0">
@@ -628,9 +641,23 @@
             </section>
 
             <!-- Alert Indirizzi Non Trovati -->
-            <section id="notfound-section" class="hidden bg-amber-50 border border-amber-300 rounded-2xl p-3.5 space-y-1.5">
-                <p class="text-xs font-extrabold text-amber-900">Indirizzi non localizzati sulla mappa:</p>
-                <p id="notfound-list" class="text-xs text-amber-800"></p>
+            <section id="notfound-section" class="hidden bg-amber-50 border-2 border-amber-400 rounded-2xl p-4 shadow-sm space-y-2.5">
+                <div class="flex items-start justify-between gap-2">
+                    <div class="flex items-start gap-2">
+                        <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 text-amber-600 flex-shrink-0 mt-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.3">
+                            <path stroke-linecap="round" stroke-linejoin="round" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+                        </svg>
+                        <div>
+                            <h3 id="notfound-title" class="text-xs font-black uppercase tracking-wide text-amber-900">Indirizzi non localizzati sulla mappa</h3>
+                            <p class="text-[11px] text-amber-800 mt-0.5">Questi pacchi non sono stati inclusi nel percorso perché la via non è stata trovata:</p>
+                        </div>
+                    </div>
+                    <button type="button" id="btn-fix-notfound-step2"
+                        class="px-2.5 py-1.5 bg-amber-600 hover:bg-amber-700 text-white font-extrabold text-[11px] rounded-xl flex-shrink-0 transition-colors">
+                        Correggi
+                    </button>
+                </div>
+                <ul id="notfound-list" class="space-y-1 text-xs font-bold text-amber-950 bg-white/80 border border-amber-200 rounded-xl p-2.5"></ul>
             </section>
 
             <!-- Card Avvio Navigatore Google Maps Multi-Fase -->
@@ -1043,6 +1070,7 @@
             manualAddresses: [],
             rawAddresses: [],
             forcedIncludeSet: new Set(),
+            notFoundSet: new Set(),
             activeRoute: null,
             mapInstance: null,
             mapLayerGroup: null,
@@ -1059,6 +1087,20 @@
         };
 
         let lastGeocodeTimestamp = 0;
+
+        const providerCooldownUntil = {
+            photon: 0,
+            arcgis: 0,
+            nominatim: 0
+        };
+
+        function isProviderOnCooldown(provider) {
+            return Date.now() < (providerCooldownUntil[provider] || 0);
+        }
+
+        function triggerProviderCooldown(provider, durationMs = 18000) {
+            providerCooldownUntil[provider] = Math.max(providerCooldownUntil[provider] || 0, Date.now() + durationMs);
+        }
 
         /**
          * Normalizza ogni elemento indirizzo nel formato { address, priority, note, ocrOriginal }
@@ -1859,12 +1901,14 @@
 
                 appState.rawAddresses = validItems;
                 appState.forcedIncludeSet.clear();
+                appState.notFoundSet.clear();
                 goToStep(2);
             });
 
             document.getElementById("btn-load-example").addEventListener("click", () => {
                 appState.rawAddresses = EXAMPLE_ADDRESSES.map(normalizeAddressItem);
                 appState.forcedIncludeSet.clear();
+                appState.notFoundSet.clear();
                 showToast("Caricati 12 indirizzi di esempio", "success");
                 goToStep(2);
             });
@@ -3061,13 +3105,13 @@
 
         /**
          * Verifica e corregge il nome della via confrontandolo con lo stradario locale IndexedDB
-         * e con la ricerca geografica di prossimità Photon, preservando SEMPRE il numero civico letto dall'OCR
+         * e con la ricerca geografica di prossimità Photon/ArcGIS, preservando SEMPRE il numero civico letto dall'OCR
          */
         async function findClosestValidAddress(rawOcrAddress, biasGeo) {
             const defaultCity = getDefaultMunicipality();
             const parsed = parseItalianAddress(rawOcrAddress, defaultCity);
             if (!parsed.street || parsed.street.length < 4) {
-                return { address: rawOcrAddress, ocrOriginal: "" };
+                return { address: rawOcrAddress, ocrOriginal: "", usedNetwork: false };
             }
 
             // Il numero civico letto dall'OCR ha la priorità assoluta e non viene mai perso o sovrascritto
@@ -3130,11 +3174,13 @@
                 const changed = corrected.toLowerCase() !== rawOcrAddress.trim().toLowerCase();
                 return {
                     address: corrected,
-                    ocrOriginal: changed ? rawOcrAddress.trim() : ""
+                    ocrOriginal: changed ? rawOcrAddress.trim() : "",
+                    usedNetwork: false
                 };
             }
 
-            // 2. Ricerca Fuzzy online tramite Photon (solo su vie reali, mantenendo il civico estratto)
+            // 2. Ricerca Fuzzy online tramite Photon + fallback ArcGIS (evitando burst HTTP 429)
+            let usedNetwork = false;
             try {
                 const ignoreTokens = new Set(["via", "viale", "piazza", "piazzale", "largo", "corso", "vicolo", "strada", "di", "del", "della", "dei", "degli", "san", "sant", "santa"]);
                 const keywordTokens = parsed.street
@@ -3151,36 +3197,38 @@
                     }
                 }
 
-                const fetchPhotonWithRetry = async (qStr) => {
+                const fetchPhotonSingle = async (qStr) => {
+                    if (isProviderOnCooldown("photon")) return [];
+                    usedNetwork = true;
                     let url = `https://photon.komoot.io/api/?q=${encodeURIComponent(qStr)}&limit=5&lang=it`;
                     if (biasGeo && Number.isFinite(biasGeo.lat) && Number.isFinite(biasGeo.lon)) {
                         url += `&lat=${biasGeo.lat.toFixed(4)}&lon=${biasGeo.lon.toFixed(4)}`;
                     }
-                    for (let attempt = 0; attempt < 2; attempt++) {
-                        try {
-                            const res = await fetchWithTimeout(url, attempt === 0 ? 7500 : 9500);
-                            if (res.ok) {
-                                const data = await res.json();
-                                return Array.isArray(data?.features) ? data.features : [];
-                            }
-                        } catch {
-                            if (attempt === 0) {
-                                await new Promise(r => setTimeout(r, 350));
-                            }
+                    try {
+                        const res = await fetchWithTimeout(url, 7500);
+                        if (res.status === 429 || res.status === 503) {
+                            triggerProviderCooldown("photon", 20000);
+                            return [];
                         }
+                        if (res.ok) {
+                            const data = await res.json();
+                            return Array.isArray(data?.features) ? data.features : [];
+                        }
+                    } catch {
+                        triggerProviderCooldown("photon", 15000);
                     }
                     return [];
                 };
 
-                let features = await fetchPhotonWithRetry(queriesToRun[0]);
-                if (features.length === 0 && queriesToRun.length > 1) {
-                    features = await fetchPhotonWithRetry(queriesToRun[1]);
+                let features = await fetchPhotonSingle(queriesToRun[0]);
+                if (features.length === 0 && queriesToRun.length > 1 && !isProviderOnCooldown("photon")) {
+                    features = await fetchPhotonSingle(queriesToRun[1]);
                 }
 
-                if (features.length > 0) {
-                    let bestOnline = null;
-                    let bestOnlineScore = 0;
+                let bestOnline = null;
+                let bestOnlineScore = 0;
 
+                if (features.length > 0) {
                     for (const feat of features) {
                         const props = feat?.properties || {};
                         const coords = feat?.geometry?.coordinates;
@@ -3207,27 +3255,70 @@
                         if (sim >= 0.75 && totalRank > bestOnlineScore) {
                             bestOnlineScore = totalRank;
                             const effectiveCity = parsed.explicitCity || city || defaultCity;
+                            const osmCivic = (props.housenumber || "").trim();
+                            const hasExactCivic = Boolean(preservedHouseNumber) && houseNumbersMatch(osmCivic, preservedHouseNumber);
                             bestOnline = {
                                 address: `${street}${preservedHouseNumber ? " " + preservedHouseNumber : ""}, ${effectiveCity}`,
                                 lat,
-                                lon
+                                lon,
+                                exactCivic: hasExactCivic
                             };
                         }
                     }
+                }
 
-                    if (bestOnline) {
-                        const changed = bestOnline.address.toLowerCase() !== rawOcrAddress.trim().toLowerCase();
-                        return {
-                            address: bestOnline.address,
-                            ocrOriginal: changed ? rawOcrAddress.trim() : ""
+                // Fallback su ArcGIS se Photon non ha restituito risultati o è in cooldown
+                if (!bestOnline && !isProviderOnCooldown("arcgis")) {
+                    usedNetwork = true;
+                    const arcgisMatches = await queryArcGISCandidates(primaryQuery, parsed, biasGeo);
+                    const topArc = pickBestGeoCandidate(arcgisMatches);
+                    if (topArc && Number.isFinite(topArc.lat) && Number.isFinite(topArc.lon)) {
+                        const effectiveCity = parsed.explicitCity || defaultCity;
+                        const cleanStreet = parsed.street.charAt(0).toUpperCase() + parsed.street.slice(1);
+                        bestOnline = {
+                            address: `${cleanStreet}${preservedHouseNumber ? " " + preservedHouseNumber : ""}, ${effectiveCity}`,
+                            lat: topArc.lat,
+                            lon: topArc.lon,
+                            exactCivic: Boolean(topArc.exactCivic)
                         };
                     }
+                }
+
+                if (bestOnline) {
+                    const changed = bestOnline.address.toLowerCase() !== rawOcrAddress.trim().toLowerCase();
+                    // Salva subito in cache sia l'indirizzo completo sia la via base per evitare richieste duplicate
+                    if (Number.isFinite(bestOnline.lat) && Number.isFinite(bestOnline.lon)) {
+                        const updatedCache = loadGeoCache();
+                        const cacheKey = bestOnline.address.trim().toLowerCase();
+                        updatedCache[cacheKey] = {
+                            lat: bestOnline.lat,
+                            lon: bestOnline.lon,
+                            displayName: bestOnline.address,
+                            exactCivic: Boolean(bestOnline.exactCivic)
+                        };
+                        const parsedSaved = parseItalianAddress(bestOnline.address, defaultCity);
+                        const streetBaseKey = `${parsedSaved.street}${parsedSaved.city ? ", " + parsedSaved.city : ""}`.trim().toLowerCase();
+                        if (streetBaseKey && !updatedCache[streetBaseKey]) {
+                            updatedCache[streetBaseKey] = {
+                                lat: bestOnline.lat,
+                                lon: bestOnline.lon,
+                                displayName: bestOnline.address,
+                                exactCivic: false
+                            };
+                        }
+                        saveGeoCache(updatedCache);
+                    }
+                    return {
+                        address: bestOnline.address,
+                        ocrOriginal: changed ? rawOcrAddress.trim() : "",
+                        usedNetwork
+                    };
                 }
             } catch {
                 // In caso di offline o timeout mantiene l'indirizzo strutturato estratto dall'OCR
             }
 
-            return { address: rawOcrAddress.trim(), ocrOriginal: "" };
+            return { address: rawOcrAddress.trim(), ocrOriginal: "", usedNetwork };
         }
 
         /**
@@ -3345,23 +3436,20 @@
                     statusText.textContent = `Verifica e correzione intelligente di ${rawExtractedFromPhotos.length} indirizzi...`;
                     progressBar.style.width = "88%";
 
-                    // Esegue le verifiche a gruppi di 3 per evitare saturazione/timeout su rete mobile 4G/5G
+                    // Esegue le verifiche in sequenza controllata evitando burst HTTP 429 su 10+ indirizzi
                     const matchedResults = new Array(rawExtractedFromPhotos.length);
-                    let cursor = 0;
-                    const workerCount = Math.min(3, rawExtractedFromPhotos.length);
-                    await Promise.all(
-                        Array.from({ length: workerCount }, async () => {
-                            while (cursor < rawExtractedFromPhotos.length) {
-                                const currentIdx = cursor++;
-                                matchedResults[currentIdx] = await findClosestValidAddress(
-                                    rawExtractedFromPhotos[currentIdx],
-                                    biasGeo
-                                );
-                                const stepPct = 88 + Math.round(((currentIdx + 1) / rawExtractedFromPhotos.length) * 10);
-                                progressBar.style.width = `${Math.min(98, stepPct)}%`;
-                            }
-                        })
-                    );
+                    for (let currentIdx = 0; currentIdx < rawExtractedFromPhotos.length; currentIdx++) {
+                        const resMatch = await findClosestValidAddress(
+                            rawExtractedFromPhotos[currentIdx],
+                            biasGeo
+                        );
+                        matchedResults[currentIdx] = resMatch;
+                        const stepPct = 88 + Math.round(((currentIdx + 1) / rawExtractedFromPhotos.length) * 10);
+                        progressBar.style.width = `${Math.min(98, stepPct)}%`;
+                        if (resMatch?.usedNetwork && currentIdx < rawExtractedFromPhotos.length - 1) {
+                            await new Promise(r => setTimeout(r, 360));
+                        }
+                    }
 
                     matchedResults.forEach((matched) => {
                         if (!matched) return;
@@ -3401,6 +3489,7 @@
                 }
 
                 appState.forcedIncludeSet.clear();
+                appState.notFoundSet.clear();
                 goToStep(2);
 
             } catch (err) {
@@ -3418,7 +3507,7 @@
          */
         function initStep2Controls() {
             document.getElementById("btn-add-address-row").addEventListener("click", () => {
-                appState.rawAddresses.push({ address: "", priority: false, note: "" });
+                appState.rawAddresses.push({ address: "", priority: false, note: "", ocrOriginal: "" });
                 renderStep2AddressInputs();
                 const inputs = document.querySelectorAll("#step2-addresses-list .step2-addr-input");
                 if (inputs.length > 0) {
@@ -3431,9 +3520,9 @@
                 appState.rawAddresses = appState.rawAddresses.map(raw => {
                     const item = normalizeAddressItem(raw);
                     const trimmed = item.address.trim();
-                    if (!trimmed) return { address: "", priority: item.priority, note: item.note };
-                    if (/,\s*[a-zA-Zàèéìòù\s]+$/.test(trimmed)) return { address: trimmed, priority: item.priority, note: item.note };
-                    return { address: `${trimmed}, ${defaultCity}`, priority: item.priority, note: item.note };
+                    if (!trimmed) return { address: "", priority: item.priority, note: item.note, ocrOriginal: item.ocrOriginal };
+                    if (/,\s*[a-zA-Zàèéìòù\s]+$/.test(trimmed)) return { address: trimmed, priority: item.priority, note: item.note, ocrOriginal: item.ocrOriginal };
+                    return { address: `${trimmed}, ${defaultCity}`, priority: item.priority, note: item.note, ocrOriginal: item.ocrOriginal };
                 });
                 renderStep2AddressInputs();
                 showToast(`Aggiunto ", ${defaultCity}" agli indirizzi senza comune`, "info");
@@ -3445,7 +3534,8 @@
                     .map(item => ({
                         address: item.address.trim(),
                         priority: item.priority,
-                        note: item.note.trim()
+                        note: item.note.trim(),
+                        ocrOriginal: item.ocrOriginal
                     }))
                     .filter(item => item.address.length >= 4);
 
@@ -3461,15 +3551,22 @@
             document.getElementById("btn-back-to-step1").addEventListener("click", () => {
                 goToStep(1);
             });
+
+            document.getElementById("btn-dismiss-step2-notfound")?.addEventListener("click", () => {
+                appState.notFoundSet.clear();
+                renderStep2AddressInputs();
+            });
         }
 
         function renderStep2AddressInputs() {
             const listContainer = document.getElementById("step2-addresses-list");
             const countBadge = document.getElementById("badge-address-count");
+            const notFoundBanner = document.getElementById("step2-notfound-banner");
+            const notFoundTitle = document.getElementById("step2-notfound-title");
             if (!listContainer) return;
 
             if (appState.rawAddresses.length === 0) {
-                appState.rawAddresses = [{ address: "", priority: false, note: "" }];
+                appState.rawAddresses = [{ address: "", priority: false, note: "", ocrOriginal: "" }];
             }
 
             appState.rawAddresses = appState.rawAddresses.map(normalizeAddressItem);
@@ -3478,6 +3575,23 @@
                 countBadge.textContent = appState.rawAddresses.filter(a => a.address.trim().length > 0).length;
             };
 
+            const failedCountInList = appState.rawAddresses.filter(
+                a => a.address.trim() && appState.notFoundSet.has(a.address.trim().toLowerCase())
+            ).length;
+
+            if (notFoundBanner) {
+                if (failedCountInList > 0) {
+                    notFoundBanner.classList.remove("hidden");
+                    if (notFoundTitle) {
+                        notFoundTitle.textContent = failedCountInList === 1
+                            ? "⚠️ 1 indirizzo non è stato trovato sulla mappa"
+                            : `⚠️ ${failedCountInList} indirizzi non sono stati trovati sulla mappa`;
+                    }
+                } else {
+                    notFoundBanner.classList.add("hidden");
+                }
+            }
+
             listContainer.innerHTML = "";
             updateCountBadge();
 
@@ -3485,13 +3599,16 @@
                 const isPriority = Boolean(item.priority);
                 const hasNote = item.note.trim().length > 0;
                 const hasOcrCorrection = Boolean(item.ocrOriginal && item.ocrOriginal.trim().length > 0);
+                const isNotFound = Boolean(item.address.trim()) && appState.notFoundSet.has(item.address.trim().toLowerCase());
                 const row = document.createElement("div");
                 row.className = `p-1.5 rounded-2xl border transition-colors space-y-1.5 ${
-                    isPriority ? "bg-amber-50/70 border-amber-300" : "bg-slate-50 border-slate-200"
+                    isNotFound
+                        ? "bg-red-50/85 border-red-300"
+                        : (isPriority ? "bg-amber-50/70 border-amber-300" : "bg-slate-50 border-slate-200")
                 }`;
                 row.innerHTML = `
                     <div class="flex items-center gap-1.5">
-                        <span class="w-6 h-6 rounded-full tabular-nums ${isPriority ? "bg-amber-400 text-slate-950" : "bg-blue-100 text-posteBlue"} text-xs font-extrabold flex items-center justify-center flex-shrink-0">
+                        <span class="w-6 h-6 rounded-full tabular-nums ${isNotFound ? "bg-red-600 text-white" : (isPriority ? "bg-amber-400 text-slate-950" : "bg-blue-100 text-posteBlue")} text-xs font-extrabold flex items-center justify-center flex-shrink-0">
                             ${index + 1}
                         </span>
                         <button type="button"
@@ -3506,7 +3623,7 @@
                             value="${escapeHtml(item.address)}"
                             data-addr-idx="${index}"
                             placeholder="Es. Via Cornelia 164, Roma"
-                            class="step2-addr-input flex-1 min-w-0 px-3 py-2 bg-white border border-slate-300 rounded-xl text-sm font-semibold text-slate-800 focus:outline-none focus:ring-2 focus:ring-posteBlue">
+                            class="step2-addr-input flex-1 min-w-0 px-3 py-2 bg-white border ${isNotFound ? "border-red-400 text-red-900" : "border-slate-300 text-slate-800"} rounded-xl text-sm font-semibold focus:outline-none focus:ring-2 focus:ring-posteBlue">
                         <button type="button"
                             data-step2-roma-idx="${index}"
                             title='Aggiungi ", Roma"'
@@ -3530,6 +3647,11 @@
                             </svg>
                         </button>
                     </div>
+                    ${isNotFound ? `
+                    <div class="pl-7 pr-1 flex items-center justify-between gap-2 text-[11px] bg-red-100/90 border border-red-200 rounded-xl px-2.5 py-1 text-red-800 font-bold">
+                        <span>⚠️ Indirizzo non trovato sulla mappa: verifica ortografia o comune</span>
+                    </div>
+                    ` : ""}
                     ${hasOcrCorrection ? `
                     <div class="pl-7 pr-1 flex items-center justify-between gap-2 text-[11px] bg-emerald-50/90 border border-emerald-200/80 rounded-xl px-2.5 py-1">
                         <span class="text-emerald-800 font-semibold truncate">✨ Corretto da OCR: <span class="line-through opacity-75">${escapeHtml(item.ocrOriginal)}</span></span>
@@ -3554,6 +3676,14 @@
 
                 input.addEventListener("input", (e) => {
                     const idx = parseInt(e.target.dataset.addrIdx, 10);
+                    const prevAddr = appState.rawAddresses[idx].address.trim().toLowerCase();
+                    if (prevAddr && appState.notFoundSet.has(prevAddr)) {
+                        appState.notFoundSet.delete(prevAddr);
+                        row.classList.remove("bg-red-50/85", "border-red-300");
+                        row.classList.add(isPriority ? "bg-amber-50/70" : "bg-slate-50", isPriority ? "border-amber-300" : "border-slate-200");
+                        input.classList.remove("border-red-400", "text-red-900");
+                        input.classList.add("border-slate-300", "text-slate-800");
+                    }
                     appState.rawAddresses[idx].address = e.target.value;
                     updateCountBadge();
                 });
@@ -3781,7 +3911,7 @@
                 .trim();
         }
 
-        function lookupAddressInOfflineAtlas(rawAddress) {
+        function lookupAddressInOfflineAtlas(rawAddress, allowStreetFallback = false) {
             const atlas = loadOfflineAtlas();
             if (!atlas.regions.length) return null;
 
@@ -3842,7 +3972,7 @@
                     }
                 }
 
-                if (!requestedCivicNorm && entries.length > 0) {
+                if ((!requestedCivicNorm || allowStreetFallback) && entries.length > 0) {
                     const mid = entries[Math.floor(entries.length / 2)];
                     return {
                         lat: mid[1],
@@ -3862,7 +3992,7 @@
                 return true;
             });
 
-            if (matchingRoadKeys.length > 0 && !requestedCivicNorm) {
+            if (matchingRoadKeys.length > 0 && (!requestedCivicNorm || allowStreetFallback)) {
                 const rKey = matchingRoadKeys[0];
                 const coords = atlas.roads[rKey];
                 const cityLabel = rKey.split("|")[1] || "";
@@ -3982,6 +4112,7 @@
         }
 
         async function queryNominatimCandidates(queryText, parsed, biasGeo, structured = false) {
+            if (isProviderOnCooldown("nominatim")) return [];
             await throttleNominatim();
             let url = "https://nominatim.openstreetmap.org/search?format=jsonv2&addressdetails=1&limit=5&countrycodes=it";
             if (biasGeo) {
@@ -3999,49 +4130,68 @@
                 url += `&q=${encodeURIComponent(queryText)}`;
             }
 
-            const res = await fetchWithTimeout(url, 8000);
-            if (!res.ok) return [];
-            const data = await res.json();
-            if (!Array.isArray(data)) return [];
+            try {
+                const res = await fetchWithTimeout(url, 8000);
+                if (res.status === 429 || res.status === 403 || res.status === 503) {
+                    triggerProviderCooldown("nominatim", 30000);
+                    return [];
+                }
+                if (!res.ok) return [];
+                const data = await res.json();
+                if (!Array.isArray(data)) return [];
 
-            return data
-                .map(item => extractNominatimCandidate(item, parsed.houseNumber, parsed.city, biasGeo))
-                .filter(Boolean);
+                return data
+                    .map(item => extractNominatimCandidate(item, parsed.houseNumber, parsed.city, biasGeo))
+                    .filter(Boolean);
+            } catch {
+                triggerProviderCooldown("nominatim", 20000);
+                return [];
+            }
         }
 
         async function queryPhotonCandidates(queryText, parsed, biasGeo) {
+            if (isProviderOnCooldown("photon")) return [];
             let url = `https://photon.komoot.io/api/?q=${encodeURIComponent(queryText)}&limit=6&lang=it`;
             if (biasGeo) {
                 url += `&lat=${biasGeo.lat.toFixed(4)}&lon=${biasGeo.lon.toFixed(4)}`;
             }
-            const res = await fetchWithTimeout(url, 8000);
-            if (!res.ok) return [];
-            const data = await res.json();
-            const features = Array.isArray(data?.features) ? data.features : [];
+            try {
+                const res = await fetchWithTimeout(url, 8000);
+                if (res.status === 429 || res.status === 503) {
+                    triggerProviderCooldown("photon", 20000);
+                    return [];
+                }
+                if (!res.ok) return [];
+                const data = await res.json();
+                const features = Array.isArray(data?.features) ? data.features : [];
 
-            return features.map(feat => {
-                const coords = feat?.geometry?.coordinates;
-                const props = feat?.properties || {};
-                if (!Array.isArray(coords)) return null;
-                const lat = parseFloat(coords[1]);
-                const lon = parseFloat(coords[0]);
-                if (!Number.isFinite(lat) || !Number.isFinite(lon)) return null;
+                return features.map(feat => {
+                    const coords = feat?.geometry?.coordinates;
+                    const props = feat?.properties || {};
+                    if (!Array.isArray(coords)) return null;
+                    const lat = parseFloat(coords[1]);
+                    const lon = parseFloat(coords[0]);
+                    if (!Number.isFinite(lat) || !Number.isFinite(lon)) return null;
 
-                const osmHouseNum = (props.housenumber || "").trim();
-                const city = (props.city || props.town || props.village || props.municipality || props.locality || props.county || "").trim();
-                const exactCivic = Boolean(parsed.houseNumber) && houseNumbersMatch(osmHouseNum, parsed.houseNumber);
-                const cityMatches = !parsed.city || city.toLowerCase().includes(parsed.city.toLowerCase());
-                const distKm = biasGeo ? haversineKm(biasGeo.lat, biasGeo.lon, lat, lon) : 0;
+                    const osmHouseNum = (props.housenumber || "").trim();
+                    const city = (props.city || props.town || props.village || props.municipality || props.locality || props.county || "").trim();
+                    const exactCivic = Boolean(parsed.houseNumber) && houseNumbersMatch(osmHouseNum, parsed.houseNumber);
+                    const cityMatches = !parsed.city || city.toLowerCase().includes(parsed.city.toLowerCase());
+                    const distKm = biasGeo ? haversineKm(biasGeo.lat, biasGeo.lon, lat, lon) : 0;
 
-                return {
-                    lat,
-                    lon,
-                    displayName: `${props.street || props.name || queryText}${osmHouseNum ? " " + osmHouseNum : ""}${city ? ", " + city : ""}`,
-                    exactCivic,
-                    cityMatches,
-                    distKm
-                };
-            }).filter(Boolean);
+                    return {
+                        lat,
+                        lon,
+                        displayName: `${props.street || props.name || queryText}${osmHouseNum ? " " + osmHouseNum : ""}${city ? ", " + city : ""}`,
+                        exactCivic,
+                        cityMatches,
+                        distKm
+                    };
+                }).filter(Boolean);
+            } catch {
+                triggerProviderCooldown("photon", 15000);
+                return [];
+            }
         }
 
         function pickBestGeoCandidate(candidates) {
@@ -4054,8 +4204,65 @@
             return sorted[0];
         }
 
-        async function geocodeAddress(rawAddress, biasGeo = null) {
-            const offlineHit = lookupAddressInOfflineAtlas(rawAddress);
+        async function queryArcGISCandidates(queryText, parsed, biasGeo) {
+            if (isProviderOnCooldown("arcgis")) return [];
+            let url = `https://geocode.arcgis.com/arcgis/rest/services/World/GeocodeServer/findAddressCandidates?SingleLine=${encodeURIComponent(queryText)}&countryCode=ITA&maxLocations=3&outFields=Match_addr,StName,AddNum,City&f=json`;
+            if (biasGeo && Number.isFinite(biasGeo.lat) && Number.isFinite(biasGeo.lon)) {
+                url += `&location=${biasGeo.lon.toFixed(4)},${biasGeo.lat.toFixed(4)}`;
+            }
+            try {
+                const res = await fetchWithTimeout(url, 8000);
+                if (res.status === 429 || res.status === 503) {
+                    triggerProviderCooldown("arcgis", 15000);
+                    return [];
+                }
+                if (!res.ok) return [];
+                const data = await res.json();
+                const candidates = Array.isArray(data?.candidates) ? data.candidates : [];
+
+                return candidates
+                    .filter(c => (c?.score || 0) >= 58 && c?.location && Number.isFinite(c.location.y) && Number.isFinite(c.location.x))
+                    .map(c => {
+                        const lat = parseFloat(c.location.y);
+                        const lon = parseFloat(c.location.x);
+                        const attrs = c.attributes || {};
+                        const matchedNum = String(attrs.AddNum || "").trim();
+                        const matchedCity = String(attrs.City || "").trim();
+                        const exactCivic = Boolean(parsed.houseNumber) && houseNumbersMatch(matchedNum, parsed.houseNumber);
+                        const cityMatches = !parsed.city || matchedCity.toLowerCase().includes(parsed.city.toLowerCase()) || String(c.address || "").toLowerCase().includes(parsed.city.toLowerCase());
+                        const distKm = biasGeo ? haversineKm(biasGeo.lat, biasGeo.lon, lat, lon) : 0;
+
+                        return {
+                            lat,
+                            lon,
+                            displayName: c.address || queryText,
+                            exactCivic,
+                            cityMatches,
+                            distKm
+                        };
+                    });
+            } catch {
+                triggerProviderCooldown("arcgis", 10000);
+                return [];
+            }
+        }
+
+        function expandItalianStreetAbbreviations(street) {
+            return (street || "")
+                .replace(/\bS\.\s*/gi, "San ")
+                .replace(/\bSS\.\s*/gi, "Santi ")
+                .replace(/\bV\.le\b\.?/gi, "Viale")
+                .replace(/\bP\.zza\b\.?/gi, "Piazza")
+                .replace(/\bP\.le\b\.?/gi, "Piazzale")
+                .replace(/\bC\.so\b\.?/gi, "Corso")
+                .replace(/\bL\.go\b\.?/gi, "Largo")
+                .replace(/\bL\.tevere\b\.?/gi, "Lungotevere")
+                .replace(/\s+/g, " ")
+                .trim();
+        }
+
+        async function geocodeAddress(rawAddress, biasGeo = null, fastMode = false) {
+            const offlineHit = lookupAddressInOfflineAtlas(rawAddress, false);
             if (offlineHit && Number.isFinite(offlineHit.lat) && Number.isFinite(offlineHit.lon)) {
                 return { geo: offlineHit, fromCache: true };
             }
@@ -4065,11 +4272,17 @@
             const normalizedKey = `${parsed.street}${parsed.houseNumber ? " " + parsed.houseNumber : ""}${parsed.city ? ", " + parsed.city : ""}`
                 .trim()
                 .toLowerCase();
+            const streetOnlyKey = `${parsed.street}${parsed.city ? ", " + parsed.city : ""}`
+                .trim()
+                .toLowerCase();
 
             const cache = loadGeoCache();
             if (cache[normalizedKey] && (!parsed.houseNumber || cache[normalizedKey].exactCivic)) {
                 return { geo: cache[normalizedKey], fromCache: true };
             }
+
+            // Coordinate già note della via (da verifica OCR, cache o atlante offline) come paracadute sicuro
+            const cachedStreetFallback = cache[normalizedKey] || cache[streetOnlyKey] || lookupAddressInOfflineAtlas(rawAddress, true);
 
             const effectiveBias = biasGeo || (() => {
                 if (appState.useCurrentLocationStart && appState.currentGpsCoords && Number.isFinite(appState.currentGpsCoords.lat)) {
@@ -4080,61 +4293,78 @@
             })();
 
             const fullQuery = `${parsed.street}${parsed.houseNumber ? " " + parsed.houseNumber : ""}${parsed.city ? ", " + parsed.city : ""}`;
+            const expandedStreet = expandItalianStreetAbbreviations(parsed.street);
+            const expandedFullQuery = `${expandedStreet}${parsed.houseNumber ? " " + parsed.houseNumber : ""}${parsed.city ? ", " + parsed.city : ""}`;
             let bestCandidate = null;
 
             try {
-                const photonMatches = await queryPhotonCandidates(fullQuery, parsed, effectiveBias);
-                bestCandidate = pickBestGeoCandidate(photonMatches);
-
-                if (parsed.houseNumber && (!bestCandidate || !bestCandidate.exactCivic || !bestCandidate.cityMatches)) {
-                    const nomStructured = await queryNominatimCandidates(fullQuery, parsed, effectiveBias, true);
-                    const bestStructured = pickBestGeoCandidate(nomStructured);
-                    if (bestStructured && (bestStructured.exactCivic || !bestCandidate)) {
-                        bestCandidate = bestStructured;
-                    }
-
-                    if (!bestCandidate || !bestCandidate.exactCivic) {
-                        const nomFree = await queryNominatimCandidates(fullQuery, parsed, effectiveBias, false);
-                        const bestFree = pickBestGeoCandidate(nomFree);
-                        if (bestFree && (bestFree.exactCivic || !bestCandidate)) {
-                            bestCandidate = bestFree;
+                // In modalità veloce (oltre 10 indirizzi), se la verifica OCR ha già localizzato la via,
+                // tenta al massimo una rapida verifica civico su ArcGIS o Photon senza sovraccaricare i server
+                if (fastMode && cachedStreetFallback) {
+                    if (!isProviderOnCooldown("arcgis")) {
+                        const arcgisFast = await queryArcGISCandidates(expandedFullQuery, { ...parsed, street: expandedStreet }, effectiveBias);
+                        const bestArcFast = pickBestGeoCandidate(arcgisFast);
+                        if (bestArcFast && bestArcFast.exactCivic && bestArcFast.cityMatches) {
+                            bestCandidate = bestArcFast;
+                        }
+                    } else if (!isProviderOnCooldown("photon")) {
+                        const photonFast = await queryPhotonCandidates(expandedFullQuery, { ...parsed, street: expandedStreet }, effectiveBias);
+                        const bestPhotonFast = pickBestGeoCandidate(photonFast);
+                        if (bestPhotonFast && bestPhotonFast.exactCivic && bestPhotonFast.cityMatches) {
+                            bestCandidate = bestPhotonFast;
                         }
                     }
-                } else if (!bestCandidate) {
-                    const nomMatches = await queryNominatimCandidates(fullQuery, parsed, effectiveBias, false);
-                    bestCandidate = pickBestGeoCandidate(nomMatches);
-                }
+                } else {
+                    // 1. Ricerca rapida su Photon (se non in cooldown)
+                    if (!isProviderOnCooldown("photon")) {
+                        const photonMatches = await queryPhotonCandidates(fullQuery, parsed, effectiveBias);
+                        bestCandidate = pickBestGeoCandidate(photonMatches);
 
-                if ((!bestCandidate || !bestCandidate.cityMatches) && !parsed.explicitCity) {
-                    const noCityParsed = { ...parsed, city: "" };
-                    const noCityQuery = `${parsed.street}${parsed.houseNumber ? " " + parsed.houseNumber : ""}`;
-                    const nearbyPhoton = await queryPhotonCandidates(noCityQuery, noCityParsed, effectiveBias);
-                    const bestNearby = pickBestGeoCandidate(nearbyPhoton);
-                    if (bestNearby && bestNearby.distKm < 60) {
-                        bestCandidate = bestNearby;
-                    }
-                }
-
-                if (!bestCandidate && parsed.houseNumber) {
-                    const baseCivicMatch = parsed.houseNumber.match(/^(\d+)/);
-                    if (baseCivicMatch && baseCivicMatch[1] !== parsed.houseNumber) {
-                        const baseCivicParsed = { ...parsed, houseNumber: baseCivicMatch[1] };
-                        const baseCivicQuery = `${parsed.street} ${baseCivicMatch[1]}${parsed.city ? ", " + parsed.city : ""}`;
-                        const baseCivicPhoton = await queryPhotonCandidates(baseCivicQuery, baseCivicParsed, effectiveBias);
-                        bestCandidate = pickBestGeoCandidate(baseCivicPhoton);
-                        if (!bestCandidate || !bestCandidate.exactCivic) {
-                            const baseCivicNom = await queryNominatimCandidates(baseCivicQuery, baseCivicParsed, effectiveBias, true);
-                            const bestBaseNom = pickBestGeoCandidate(baseCivicNom);
-                            if (bestBaseNom) bestCandidate = bestBaseNom;
+                        if (!bestCandidate && expandedFullQuery !== fullQuery && !isProviderOnCooldown("photon")) {
+                            const expandedParsed = { ...parsed, street: expandedStreet };
+                            const expMatches = await queryPhotonCandidates(expandedFullQuery, expandedParsed, effectiveBias);
+                            bestCandidate = pickBestGeoCandidate(expMatches);
                         }
                     }
-                }
 
-                if (!bestCandidate && parsed.houseNumber) {
-                    const streetOnlyParsed = { ...parsed, houseNumber: "" };
-                    const streetOnlyQuery = `${parsed.street}${parsed.city ? ", " + parsed.city : ""}`;
-                    const fallbackNom = await queryNominatimCandidates(streetOnlyQuery, streetOnlyParsed, effectiveBias, false);
-                    bestCandidate = pickBestGeoCandidate(fallbackNom);
+                    // 2. Ricerca su ArcGIS (ottima copertura civici italiani senza limite 1 req/sec)
+                    if (!bestCandidate || (parsed.houseNumber && (!bestCandidate.exactCivic || !bestCandidate.cityMatches))) {
+                        const arcgisMatches = await queryArcGISCandidates(expandedFullQuery, { ...parsed, street: expandedStreet }, effectiveBias);
+                        const bestArcgis = pickBestGeoCandidate(arcgisMatches);
+                        if (bestArcgis && (bestArcgis.exactCivic || !bestCandidate || (!bestCandidate.cityMatches && bestArcgis.cityMatches))) {
+                            bestCandidate = bestArcgis;
+                        }
+                    }
+
+                    // 3. Se non abbiamo ancora nulla (e non abbiamo già un paracadute OCR), tenta Nominatim free-text + fallback senza numero civico
+                    if (!bestCandidate && !cachedStreetFallback) {
+                        const nomFree = await queryNominatimCandidates(expandedFullQuery, { ...parsed, street: expandedStreet }, effectiveBias, false);
+                        bestCandidate = pickBestGeoCandidate(nomFree);
+
+                        // Fallback senza numero civico (utile se il singolo civico non è censito sulle mappe)
+                        if (!bestCandidate && parsed.houseNumber) {
+                            const streetOnlyParsed = { ...parsed, street: expandedStreet, houseNumber: "" };
+                            const streetOnlyQuery = `${expandedStreet}${parsed.city ? ", " + parsed.city : ""}`;
+                            const streetPhoton = await queryPhotonCandidates(streetOnlyQuery, streetOnlyParsed, effectiveBias);
+                            bestCandidate = pickBestGeoCandidate(streetPhoton);
+
+                            if (!bestCandidate) {
+                                const streetArcgis = await queryArcGISCandidates(streetOnlyQuery, streetOnlyParsed, effectiveBias);
+                                bestCandidate = pickBestGeoCandidate(streetArcgis);
+                            }
+                        }
+                    }
+
+                    // 4. Se il comune non era esplicito e non abbiamo ancora trovato nulla, cerca per prossimità
+                    if ((!bestCandidate || !bestCandidate.cityMatches) && !parsed.explicitCity && !cachedStreetFallback) {
+                        const noCityParsed = { ...parsed, street: expandedStreet, city: "" };
+                        const noCityQuery = `${expandedStreet}${parsed.houseNumber ? " " + parsed.houseNumber : ""}`;
+                        const nearbyPhoton = await queryPhotonCandidates(noCityQuery, noCityParsed, effectiveBias);
+                        const bestNearby = pickBestGeoCandidate(nearbyPhoton);
+                        if (bestNearby && bestNearby.distKm < 60) {
+                            bestCandidate = bestNearby;
+                        }
+                    }
                 }
             } catch (err) {
                 console.warn("Errore geocodifica per:", rawAddress, err);
@@ -4148,12 +4378,17 @@
                     exactCivic: Boolean(bestCandidate.exactCivic)
                 };
                 cache[normalizedKey] = geoRecord;
+                if (streetOnlyKey && !cache[streetOnlyKey]) {
+                    cache[streetOnlyKey] = { ...geoRecord, exactCivic: false };
+                }
                 saveGeoCache(cache);
                 return { geo: geoRecord, fromCache: false };
             }
 
-            if (cache[normalizedKey]) {
-                return { geo: cache[normalizedKey], fromCache: true };
+            if (cachedStreetFallback && Number.isFinite(cachedStreetFallback.lat) && Number.isFinite(cachedStreetFallback.lon)) {
+                cache[normalizedKey] = cachedStreetFallback;
+                saveGeoCache(cache);
+                return { geo: cachedStreetFallback, fromCache: true };
             }
 
             return { geo: null, fromCache: false };
@@ -5215,14 +5450,20 @@
                 const validStops = [];
                 const anomalies = [];
                 const notFound = [];
+                const useFastMode = totalStops > 10;
+                const requestPauseMs = totalStops > 10 ? 320 : 140;
+                let completedGeocodes = 0;
 
+                // Geocodifica sequenziale controllata con pausa adattiva per evitare HTTP 429 su 10+ pacchi
                 for (let i = 0; i < totalStops; i++) {
                     const item = normalizeAddressItem(appState.rawAddresses[i]);
                     const addr = item.address;
-                    const pct = 15 + Math.round(((i + 1) / totalStops) * 58);
-                    updateCalcUI(pct, "Ricerca indirizzi sulla mappa...", `${i + 1}/${totalStops}: ${addr}`);
 
-                    const { geo } = await geocodeAddress(addr, startGeo);
+                    const { geo, fromCache } = await geocodeAddress(addr, startGeo, useFastMode);
+                    completedGeocodes++;
+                    const pct = 15 + Math.round((completedGeocodes / totalStops) * 58);
+                    updateCalcUI(pct, "Ricerca indirizzi sulla mappa...", `${completedGeocodes}/${totalStops}: ${addr}`);
+
                     if (!geo) {
                         notFound.push(addr);
                         continue;
@@ -5251,10 +5492,19 @@
                             wasAnomaly: distFromStartKm > ANOMALY_DISTANCE_KM
                         });
                     }
+
+                    if (!fromCache && i < totalStops - 1) {
+                        await new Promise(r => setTimeout(r, requestPauseMs));
+                    }
                 }
 
+                appState.notFoundSet = new Set(notFound.map(a => a.trim().toLowerCase()));
+
                 if (validStops.length === 0) {
-                    showToast("Nessuna tappa valida trovata entro 25 km.", "warning");
+                    const errorMsg = notFound.length === totalStops
+                        ? `Nessuno dei ${totalStops} indirizzi è stato localizzato. Controlla i nomi evidenziati in rosso.`
+                        : "Nessuna tappa valida trovata entro 25 km.";
+                    showToast(errorMsg, "error");
                     goToStep(2);
                     return;
                 }
@@ -5345,12 +5595,19 @@
                 updateCalcUI(100, "Percorso pronto!", "Apertura dashboard...");
                 goToStep(4);
                 renderStep4Dashboard();
-                showToast(
-                    variants.length > 1
-                        ? `Selezionate le ${variants.length} migliori alternative (${activeShiftData.stops.length} tappe)!`
-                        : `Percorso ottimizzato (${activeShiftData.stops.length} tappe)!`,
-                    "success"
-                );
+                if (notFound.length > 0) {
+                    showToast(
+                        `Percorso pronto (${activeShiftData.stops.length} tappe), ma ${notFound.length} ${notFound.length === 1 ? "indirizzo non è stato trovato" : "indirizzi non sono stati trovati"}!`,
+                        "warning"
+                    );
+                } else {
+                    showToast(
+                        variants.length > 1
+                            ? `Selezionate le ${variants.length} migliori alternative (${activeShiftData.stops.length} tappe)!`
+                            : `Percorso ottimizzato (${activeShiftData.stops.length} tappe)!`,
+                        "success"
+                    );
+                }
 
             } catch (err) {
                 console.error("Errore ottimizzazione:", err);
@@ -5447,9 +5704,11 @@
                         };
                     }
                     syncStartLocationUI();
+                    appState.notFoundSet = new Set((parsed.notFound || []).map(nf => String(nf).trim().toLowerCase()));
                     appState.rawAddresses = [
                         ...parsed.stops.map(s => ({ address: s.address, priority: Boolean(s.priority), note: s.note || "", ocrOriginal: "" })),
-                        ...(parsed.anomalies || []).map(a => ({ address: a.address, priority: Boolean(a.priority), note: a.note || "", ocrOriginal: "" }))
+                        ...(parsed.anomalies || []).map(a => ({ address: a.address, priority: Boolean(a.priority), note: a.note || "", ocrOriginal: "" })),
+                        ...(parsed.notFound || []).map(nf => ({ address: nf, priority: false, note: "", ocrOriginal: "" }))
                     ];
                     return true;
                 }
@@ -5624,10 +5883,18 @@
             }
 
             const notFoundSection = document.getElementById("notfound-section");
+            const notFoundTitle = document.getElementById("notfound-title");
             const notFoundList = document.getElementById("notfound-list");
             if (data.notFound && data.notFound.length > 0) {
                 notFoundSection.classList.remove("hidden");
-                notFoundList.textContent = data.notFound.join(" • ");
+                if (notFoundTitle) {
+                    notFoundTitle.textContent = data.notFound.length === 1
+                        ? "⚠️ 1 indirizzo non localizzato"
+                        : `⚠️ ${data.notFound.length} indirizzi non localizzati`;
+                }
+                notFoundList.innerHTML = data.notFound
+                    .map(addr => `<li class="flex items-center gap-1.5"><span class="text-amber-600">•</span><span>${escapeHtml(addr)}</span></li>`)
+                    .join("");
             } else {
                 notFoundSection.classList.add("hidden");
             }
@@ -6334,8 +6601,20 @@
             document.getElementById("btn-edit-addresses-from-route").addEventListener("click", () => {
                 if (appState.activeRoute) {
                     appState.rawAddresses = [
-                        ...appState.activeRoute.stops.map(s => ({ address: s.address, priority: Boolean(s.priority), note: s.note || "" })),
-                        ...(appState.activeRoute.anomalies || []).map(a => ({ address: a.address, priority: Boolean(a.priority), note: a.note || "" }))
+                        ...appState.activeRoute.stops.map(s => ({ address: s.address, priority: Boolean(s.priority), note: s.note || "", ocrOriginal: "" })),
+                        ...(appState.activeRoute.anomalies || []).map(a => ({ address: a.address, priority: Boolean(a.priority), note: a.note || "", ocrOriginal: "" })),
+                        ...(appState.activeRoute.notFound || []).map(nf => ({ address: nf, priority: false, note: "", ocrOriginal: "" }))
+                    ];
+                }
+                goToStep(2);
+            });
+
+            document.getElementById("btn-fix-notfound-step2")?.addEventListener("click", () => {
+                if (appState.activeRoute) {
+                    appState.rawAddresses = [
+                        ...(appState.activeRoute.notFound || []).map(nf => ({ address: nf, priority: false, note: "", ocrOriginal: "" })),
+                        ...appState.activeRoute.stops.map(s => ({ address: s.address, priority: Boolean(s.priority), note: s.note || "", ocrOriginal: "" })),
+                        ...(appState.activeRoute.anomalies || []).map(a => ({ address: a.address, priority: Boolean(a.priority), note: a.note || "", ocrOriginal: "" }))
                     ];
                 }
                 goToStep(2);
@@ -6364,6 +6643,7 @@
                 appState.manualAddresses = [];
                 appState.rawAddresses = [];
                 appState.forcedIncludeSet.clear();
+                appState.notFoundSet.clear();
                 renderUploadedImagesGrid();
                 renderManualAddressBoxes();
                 modalReset.classList.add("hidden");
@@ -6836,9 +7116,9 @@
             const query = `[out:json][timeout:18][bbox:${tileBounds.south.toFixed(6)},${tileBounds.west.toFixed(6)},${tileBounds.north.toFixed(6)},${tileBounds.east.toFixed(6)}];(nw["addr:housenumber"]["addr:street"];way["highway"]["name"];);out center tags qt;`;
 
             const overpassEndpoints = [
+                "https://overpass.kumi.systems/api/interpreter",
                 "https://overpass-api.de/api/interpreter",
-                "https://overpass.private.coffee/api/interpreter",
-                "https://overpass.kumi.systems/api/interpreter"
+                "https://overpass.private.coffee/api/interpreter"
             ];
 
             for (let epIdx = 0; epIdx < overpassEndpoints.length; epIdx++) {

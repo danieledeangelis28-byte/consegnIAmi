@@ -5940,19 +5940,19 @@
                     if (!stopToPhaseMap[orderNum]) stopToPhaseMap[orderNum] = p.phaseNumber;
                 });
 
-                const isPrimary = p.phaseNumber === 1;
+                const isOddPhase = p.phaseNumber % 2 === 1;
                 const a = document.createElement("a");
                 a.href = p.url;
                 a.target = "_blank";
                 a.rel = "noopener noreferrer";
                 a.className = `w-full p-3.5 rounded-2xl border shadow-sm flex items-center justify-between gap-3 transition-transform active:scale-[0.98] ${
-                    isPrimary
+                    isOddPhase
                         ? "bg-posteYellow text-posteBlue border-posteYellowDark"
                         : "bg-posteBlue text-posteYellow border-posteBlueDark"
                 }`;
                 a.innerHTML = `
                     <div class="flex items-center gap-3 min-w-0">
-                        <div class="w-9 h-9 rounded-xl ${isPrimary ? "bg-posteBlue text-posteYellow" : "bg-posteYellow text-posteBlue"} font-black text-sm flex items-center justify-center flex-shrink-0">
+                        <div class="w-9 h-9 rounded-xl ${isOddPhase ? "bg-posteBlue text-posteYellow" : "bg-posteYellow text-posteBlue"} font-black text-sm flex items-center justify-center flex-shrink-0">
                             ${p.phaseNumber}
                         </div>
                         <div class="text-left min-w-0">

@@ -242,6 +242,15 @@
         .leaflet-bottom {
             z-index: 10 !important;
         }
+
+        /* Adattamento automatico multi-riga per lettura completa indirizzi su smartphone */
+        .step2-addr-input {
+            resize: none;
+            overflow: hidden;
+            overflow-wrap: break-word;
+            word-break: break-word;
+            line-height: 1.35;
+        }
     </style>
 </head>
 <body class="bg-[#EEF3FA] text-slate-900 font-sans min-h-screen flex flex-col selection:bg-posteYellow selection:text-posteBlue">
@@ -259,7 +268,7 @@
                 </div>
                 <div>
                     <h1 class="text-base font-extrabold leading-tight tracking-tight">ConsegnIA</h1>
-                    <p class="text-[11px] text-blue-100/90 font-medium">Pianificatore Giro Consegne • v3.6</p>
+                    <p class="text-[11px] text-blue-100/90 font-medium">Pianificatore Giro Consegne • v3.6.1</p>
                 </div>
             </div>
 
@@ -3505,6 +3514,12 @@
         /**
          * STEP 2: Gestione Caselle di Testo Individuali per Ogni Indirizzo
          */
+        function autoResizeAddressTextarea(el) {
+            if (!el) return;
+            el.style.height = "auto";
+            el.style.height = `${el.scrollHeight}px`;
+        }
+
         function initStep2Controls() {
             document.getElementById("btn-add-address-row").addEventListener("click", () => {
                 appState.rawAddresses.push({ address: "", priority: false, note: "", ocrOriginal: "" });
@@ -3607,33 +3622,33 @@
                         : (isPriority ? "bg-amber-50/70 border-amber-300" : "bg-slate-50 border-slate-200")
                 }`;
                 row.innerHTML = `
-                    <div class="flex items-center gap-1.5">
-                        <span class="w-6 h-6 rounded-full tabular-nums ${isNotFound ? "bg-red-600 text-white" : (isPriority ? "bg-amber-400 text-slate-950" : "bg-blue-100 text-posteBlue")} text-xs font-extrabold flex items-center justify-center flex-shrink-0">
+                    <div class="flex items-start gap-1.5">
+                        <span class="w-6 h-6 mt-1.5 rounded-full tabular-nums ${isNotFound ? "bg-red-600 text-white" : (isPriority ? "bg-amber-400 text-slate-950" : "bg-blue-100 text-posteBlue")} text-xs font-extrabold flex items-center justify-center flex-shrink-0">
                             ${index + 1}
                         </span>
                         <button type="button"
                             data-step2-priority-idx="${index}"
                             title="${isPriority ? "Rimuovi priorità" : "Segna come prioritario"}"
-                            class="p-2 rounded-xl ${isPriority ? "bg-amber-100 text-amber-500 border border-amber-300" : "bg-white text-slate-400 hover:text-amber-500 border border-slate-200"} transition-colors flex-shrink-0">
+                            class="p-2 mt-0.5 rounded-xl ${isPriority ? "bg-amber-100 text-amber-500 border border-amber-300" : "bg-white text-slate-400 hover:text-amber-500 border border-slate-200"} transition-colors flex-shrink-0">
                             <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" viewBox="0 0 24 24" fill="${isPriority ? "currentColor" : "none"}" stroke="currentColor" stroke-width="2.2">
                                 <path stroke-linecap="round" stroke-linejoin="round" d="M11.049 2.927c.3-.921 1.603-.921 1.902 0l1.519 4.674a1 1 0 00.95.69h4.915c.969 0 1.371 1.24.588 1.81l-3.976 2.888a1 1 0 00-.363 1.118l1.518 4.674c.3.922-.755 1.688-1.538 1.118l-3.976-2.888a1 1 0 00-1.176 0l-3.976 2.888c-.783.57-1.838-.197-1.538-1.118l1.518-4.674a1 1 0 00-.363-1.118l-3.976-2.888c-.784-.57-.38-1.81.588-1.81h4.914a1 1 0 00.951-.69l1.519-4.674z" />
                             </svg>
                         </button>
-                        <input type="text"
-                            value="${escapeHtml(item.address)}"
+                        <textarea rows="1"
+                            enterkeyhint="done"
                             data-addr-idx="${index}"
                             placeholder="Es. Via Cornelia 164, Roma"
-                            class="step2-addr-input flex-1 min-w-0 px-3 py-2 bg-white border ${isNotFound ? "border-red-400 text-red-900" : "border-slate-300 text-slate-800"} rounded-xl text-sm font-semibold focus:outline-none focus:ring-2 focus:ring-posteBlue">
+                            class="step2-addr-input flex-1 min-w-0 px-3 py-2 bg-white border ${isNotFound ? "border-red-400 text-red-900" : "border-slate-300 text-slate-800"} rounded-xl text-sm font-semibold focus:outline-none focus:ring-2 focus:ring-posteBlue">${escapeHtml(item.address)}</textarea>
                         <button type="button"
                             data-step2-roma-idx="${index}"
                             title='Aggiungi ", Roma"'
-                            class="step2-row-roma-btn hidden px-2 py-2 bg-blue-50 hover:bg-blue-100 active:bg-blue-200 text-posteBlue border border-posteBlue/25 font-extrabold text-[11px] rounded-xl transition-all flex-shrink-0">
+                            class="step2-row-roma-btn hidden px-2 py-2 mt-0.5 bg-blue-50 hover:bg-blue-100 active:bg-blue-200 text-posteBlue border border-posteBlue/25 font-extrabold text-[11px] rounded-xl transition-all flex-shrink-0">
                             + , Roma
                         </button>
                         <button type="button"
                             data-step2-toggle-note-idx="${index}"
                             title="Aggiungi o modifica nota pacco"
-                            class="p-2 rounded-xl ${hasNote ? "bg-blue-100 text-posteBlue border border-posteBlue/30" : "bg-white text-slate-500 hover:text-posteBlue border border-slate-200"} transition-colors flex-shrink-0">
+                            class="p-2 mt-0.5 rounded-xl ${hasNote ? "bg-blue-100 text-posteBlue border border-posteBlue/30" : "bg-white text-slate-500 hover:text-posteBlue border border-slate-200"} transition-colors flex-shrink-0">
                             <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.2">
                                 <path stroke-linecap="round" stroke-linejoin="round" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
                             </svg>
@@ -3641,7 +3656,7 @@
                         <button type="button"
                             data-remove-idx="${index}"
                             title="Rimuovi indirizzo"
-                            class="p-2 rounded-xl bg-red-50 hover:bg-red-100 text-red-600 transition-colors flex-shrink-0">
+                            class="p-2 mt-0.5 rounded-xl bg-red-50 hover:bg-red-100 text-red-600 transition-colors flex-shrink-0">
                             <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.2">
                                 <path stroke-linecap="round" stroke-linejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
                             </svg>
@@ -3674,8 +3689,22 @@
                 const noteInput = row.querySelector(".step2-note-input");
                 const toggleNoteBtn = row.querySelector("button[data-step2-toggle-note-idx]");
 
+                requestAnimationFrame(() => autoResizeAddressTextarea(input));
+
+                input.addEventListener("keydown", (e) => {
+                    if (e.key === "Enter") {
+                        e.preventDefault();
+                        input.blur();
+                    }
+                });
+
                 input.addEventListener("input", (e) => {
                     const idx = parseInt(e.target.dataset.addrIdx, 10);
+                    const sanitizedSingleLine = e.target.value.replace(/\r?\n+/g, " ");
+                    if (sanitizedSingleLine !== e.target.value) {
+                        e.target.value = sanitizedSingleLine;
+                    }
+                    autoResizeAddressTextarea(e.target);
                     const prevAddr = appState.rawAddresses[idx].address.trim().toLowerCase();
                     if (prevAddr && appState.notFoundSet.has(prevAddr)) {
                         appState.notFoundSet.delete(prevAddr);
@@ -3724,6 +3753,7 @@
                     const updated = appendRomaToText(input.value);
                     input.value = updated;
                     appState.rawAddresses[index].address = updated;
+                    autoResizeAddressTextarea(input);
                     input.focus();
                     const len = updated.length;
                     input.setSelectionRange(len, len);

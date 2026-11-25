@@ -268,7 +268,7 @@
                 </div>
                 <div>
                     <h1 class="text-base font-extrabold leading-tight tracking-tight">ConsegnIA</h1>
-                    <p class="text-[11px] text-blue-100/90 font-medium">Pianificatore Giro Consegne • v3.7</p>
+                    <p class="text-[11px] text-blue-100/90 font-medium">Pianificatore Giro Consegne • v3.8</p>
                 </div>
             </div>
 
@@ -4508,67 +4508,21 @@
 
         async function fetchOSRMMatrices(allNodes) {
             const coordsParam = allNodes.map(n => `${n.lon.toFixed(6)},${n.lat.toFixed(6)}`).join(";");
-            const buildApproachesParam = (excludedSet) => allNodes
-                .map((n, idx) => (n.type === "stop" && !excludedSet.has(idx) ? "curb" : "unrestricted"))
-                .join(";");
-
-            const urlWithAllCurb = `https://router.project-osrm.org/table/v1/driving/${coordsParam}?annotations=duration,distance&approaches=${buildApproachesParam(new Set())}`;
+            // Evita approaches=curb per non forzare finte inversioni a U sulle strade urbane a doppio senso
+            // (i sensi unici e gli spartitraffico reali restano comunque rispettati dal grafo stradale OSRM)
             const urlStandard = `https://router.project-osrm.org/table/v1/driving/${coordsParam}?annotations=duration,distance`;
 
-            let usedCurb = true;
-            let data = null;
+            allNodes.forEach((n) => {
+                if (n.type === "stop") n.curbAllowed = false;
+            });
 
-            try {
-                const resCurb = await fetchWithTimeout(urlWithAllCurb, 12000);
-                if (resCurb.ok) {
-                    const parsed = await resCurb.json();
-                    if (parsed.code === "Ok" && Array.isArray(parsed.durations)) {
-                        data = parsed;
-                        allNodes.forEach((n) => {
-                            if (n.type === "stop") n.curbAllowed = true;
-                        });
-                    }
-                }
-            } catch {
-                // Procede con verifica per singolo civico
+            const resStd = await fetchWithTimeout(urlStandard, 12000);
+            if (!resStd.ok) {
+                throw new Error(`OSRM Table HTTP ${resStd.status}`);
             }
-
-            if (!data) {
-                const badCurbIndices = await findCurbIncompatibleIndices(allNodes);
-                allNodes.forEach((n, idx) => {
-                    if (n.type === "stop") n.curbAllowed = !badCurbIndices.has(idx);
-                });
-
-                if (badCurbIndices.size < allNodes.length - 2) {
-                    try {
-                        const urlFilteredCurb = `https://router.project-osrm.org/table/v1/driving/${coordsParam}?annotations=duration,distance&approaches=${buildApproachesParam(badCurbIndices)}`;
-                        const resFiltered = await fetchWithTimeout(urlFilteredCurb, 12000);
-                        if (resFiltered.ok) {
-                            const parsedFiltered = await resFiltered.json();
-                            if (parsedFiltered.code === "Ok" && Array.isArray(parsedFiltered.durations)) {
-                                data = parsedFiltered;
-                                usedCurb = true;
-                            }
-                        }
-                    } catch {
-                        // Fallback standard sotto
-                    }
-                }
-            }
-
-            if (!data) {
-                usedCurb = false;
-                allNodes.forEach((n) => {
-                    if (n.type === "stop") n.curbAllowed = false;
-                });
-                const resStd = await fetchWithTimeout(urlStandard, 12000);
-                if (!resStd.ok) {
-                    throw new Error(`OSRM Table HTTP ${resStd.status}`);
-                }
-                data = await resStd.json();
-                if (data.code !== "Ok" || !Array.isArray(data.durations)) {
-                    throw new Error("Risposta OSRM Table non valida");
-                }
+            const data = await resStd.json();
+            if (data.code !== "Ok" || !Array.isArray(data.durations)) {
+                throw new Error("Risposta OSRM Table non valida");
             }
 
             const fallback = buildFallbackMatrices(allNodes);
@@ -4587,7 +4541,7 @@
                     return (typeof val === "number" && Number.isFinite(val) && val > 0) ? val : fallback.distanceMatrix[i][j];
                 })
             );
-            return { durationMatrix, distanceMatrix, usedCurb };
+            return { durationMatrix, distanceMatrix, usedCurb: false };
         }
 
         function extractStreetAndCivicNumeric(rawAddress) {
@@ -4659,9 +4613,28 @@
 
         function expandClusterNodesToStops(orderedNodes) {
             const expanded = [];
-            for (const node of orderedNodes) {
+            for (let idx = 0; idx < orderedNodes.length; idx++) {
+                const node = orderedNodes[idx];
                 if (node.type !== "stop") continue;
-                const members = Array.isArray(node.members) && node.members.length > 0 ? node.members : [node];
+                const members = Array.isArray(node.members) && node.members.length > 0 ? [...node.members] : [node];
+
+                // Orienta i civici vicini dentro il cluster pedonale nella stessa direzione di marcia del percorso
+                if (members.length > 1) {
+                    const prevNode = idx > 0 ? orderedNodes[idx - 1] : null;
+                    const nextNode = idx < orderedNodes.length - 1 ? orderedNodes[idx + 1] : null;
+                    const first = members[0];
+                    const last = members[members.length - 1];
+                    const fwdScore =
+                        (prevNode ? haversineKm(prevNode.lat, prevNode.lon, first.lat, first.lon) : 0) +
+                        (nextNode ? haversineKm(last.lat, last.lon, nextNode.lat, nextNode.lon) : 0);
+                    const revScore =
+                        (prevNode ? haversineKm(prevNode.lat, prevNode.lon, last.lat, last.lon) : 0) +
+                        (nextNode ? haversineKm(first.lat, first.lon, nextNode.lat, nextNode.lon) : 0);
+                    if (revScore + 0.003 < fwdScore) {
+                        members.reverse();
+                    }
+                }
+
                 members.forEach((m) => {
                     expanded.push({
                         id: `stop_${expanded.length}_${m.address}`,
@@ -4718,46 +4691,117 @@
                     const leg = getEffectiveLegMetrics(i, j, allNodes, durationMatrix, distanceMatrix);
                     const timeSec = leg.durationSec;
                     const distKm = leg.distanceMeters / 1000;
-                    let cost = timeSec + distKm * 14;
+                    // Costo strettamente proporzionale al percorso stradale reale:
+                    // evita sconti negativi/clamping a 1 e penalità pari/dispari che portavano a saltare i civici lungo la via
+                    let cost = timeSec + distKm * 18;
 
                     if (i > 0 && j > 0 && i < n - 1 && j < n - 1) {
                         const a = parsedNodes[i];
                         const b = parsedNodes[j];
-                        if (a.street && a.street === b.street && distKm <= 2.5) {
-                            cost -= 30;
-                            if (a.civicNum !== null && b.civicNum !== null) {
-                                const civicDiff = Math.abs(b.civicNum - a.civicNum);
-                                const sameParity = (a.civicNum % 2) === (b.civicNum % 2);
-                                if (civicDiff <= 60) {
-                                    cost -= 18;
-                                    // Buon senso stradale: premia lo stesso lato (pari/dispari) e scoraggia attraversamenti ravvicinati
-                                    cost += sameParity ? -14 : 10;
-                                } else if (civicDiff > 250) {
-                                    cost += 12;
-                                    if (sameParity) cost -= 6;
-                                } else if (sameParity) {
-                                    cost -= 8;
-                                }
-                            }
-                            cost = Math.max(1, cost);
+                        // Piccola penalità solo quando si cambia via, così da completare la strada corrente senza distorcere le distanze
+                        if (a.street && b.street && a.street !== b.street && distKm > 0.12) {
+                            cost += 12;
                         }
                     }
-                    return cost;
+                    return Math.max(1, cost);
                 })
             );
         }
 
         /**
-         * Calcola il costo complessivo includendo la continuità di progressione lungo la stessa via
-         * per evitare zig-zag e inversioni a U (es. civico 10 -> 98 -> 44)
+         * Precalcola per ogni tratta stradale u -> v quali fermate w si trovano direttamente
+         * lungo la strada tra u e v (deviazione minima in distanza e tempo, nel verso legale di marcia)
          */
-        function computeTotalRouteCost(route, costMatrix, parsedNodes = null) {
+        function buildPassByMatrix(allNodes, durationMatrix, distanceMatrix, parsedNodes) {
+            const n = allNodes.length;
+            const passByList = Array.from({ length: n }, () => Array.from({ length: n }, () => []));
+
+            for (let u = 0; u < n - 1; u++) {
+                for (let v = 1; v < n; v++) {
+                    if (u === v) continue;
+                    const dUV = distanceMatrix[u][v] || 0;
+                    const tUV = durationMatrix[u][v] || 0;
+                    if (dUV < 35) continue;
+
+                    const streetU = parsedNodes[u]?.street || "";
+                    const streetV = parsedNodes[v]?.street || "";
+                    const cU = parsedNodes[u]?.civicNum;
+                    const cV = parsedNodes[v]?.civicNum;
+                    const sameStreetUV = Boolean(streetU && streetU === streetV);
+
+                    const maxRelDetour = Math.min(85, Math.max(40, dUV * 0.22));
+                    const maxSameStreetDetour = Math.min(120, Math.max(55, dUV * 0.28));
+                    const maxBetweenCivicDetour = Math.min(160, Math.max(70, dUV * 0.35));
+                    const list = [];
+
+                    for (let w = 1; w < n - 1; w++) {
+                        if (w === u || w === v) continue;
+                        const dUW = distanceMatrix[u][w] || 0;
+                        const dWV = distanceMatrix[w][v] || 0;
+                        // w deve trovarsi strettamente in avanti rispetto a u e prima di v
+                        if (dUW >= dUV || dWV >= dUV) continue;
+
+                        const detourDist = dUW + dWV - dUV;
+                        const detourTime = (durationMatrix[u][w] || 0) + (durationMatrix[w][v] || 0) - tUV;
+
+                        const streetW = parsedNodes[w]?.street || "";
+                        const cW = parsedNodes[w]?.civicNum;
+                        const onSameStreet = Boolean(streetW && (streetW === streetU || streetW === streetV));
+                        const civicStrictlyBetween =
+                            sameStreetUV && streetW === streetU &&
+                            cU !== null && cV !== null && cW !== null &&
+                            ((cU < cW && cW < cV) || (cU > cW && cW > cV));
+
+                        const isPassBy =
+                            (detourDist <= maxRelDetour && detourTime <= 15) ||
+                            (onSameStreet && detourDist <= maxSameStreetDetour && detourTime <= 22) ||
+                            (civicStrictlyBetween && detourDist <= maxBetweenCivicDetour && detourTime <= 28);
+
+                        if (isPassBy) {
+                            list.push({
+                                node: w,
+                                distFromU: dUW,
+                                onSameStreet: onSameStreet || civicStrictlyBetween,
+                                priority: Boolean(allNodes[w].priority)
+                            });
+                        }
+                    }
+
+                    if (list.length > 1) {
+                        list.sort((a, b) => a.distFromU - b.distFromU);
+                    }
+                    passByList[u][v] = list;
+                }
+            }
+
+            return passByList;
+        }
+
+        /**
+         * Calcola il costo complessivo includendo:
+         * - continuità di progressione lungo la stessa via (evita zig-zag e inversioni a U)
+         * - penalità se una tratta passa direttamente davanti a una consegna non ancora effettuata
+         */
+        function computeTotalRouteCost(route, costMatrix, parsedNodes = null, passByList = null, priorityBoundary = 0) {
             let total = 0;
-            for (let i = 0; i < route.length - 1; i++) {
-                total += costMatrix[route[i]][route[i + 1]];
-                if (parsedNodes && i < route.length - 2) {
-                    const p1 = parsedNodes[route[i]];
-                    const p2 = parsedNodes[route[i + 1]];
+            const L = route.length;
+            let posOf = null;
+
+            if (passByList) {
+                posOf = new Int32Array(costMatrix.length).fill(-1);
+                for (let idx = 0; idx < L; idx++) {
+                    posOf[route[idx]] = idx;
+                }
+            }
+
+            for (let i = 0; i < L - 1; i++) {
+                const u = route[i];
+                const v = route[i + 1];
+                total += costMatrix[u][v];
+
+                if (parsedNodes && i < L - 2) {
+                    const p1 = parsedNodes[u];
+                    const p2 = parsedNodes[v];
                     const p3 = parsedNodes[route[i + 2]];
                     if (
                         p1?.street && p1.street === p2?.street && p2.street === p3?.street &&
@@ -4767,9 +4811,28 @@
                         const d2 = p3.civicNum - p2.civicNum;
                         if (d1 !== 0 && d2 !== 0) {
                             if ((d1 > 0 && d2 < 0) || (d1 < 0 && d2 > 0)) {
-                                total += 26;
+                                total += 42;
                             } else {
-                                total -= 6;
+                                total -= 4;
+                            }
+                        }
+                    }
+                }
+
+                if (passByList && posOf) {
+                    const passed = passByList[u]?.[v];
+                    if (passed && passed.length > 0) {
+                        for (let k = 0; k < passed.length; k++) {
+                            const info = passed[k];
+                            const posW = posOf[info.node];
+                            if (posW <= i + 1) continue;
+
+                            const legalInThisZone = info.priority
+                                ? (i < priorityBoundary && posW <= priorityBoundary)
+                                : (i >= priorityBoundary && posW > priorityBoundary);
+
+                            if (legalInThisZone) {
+                                total += info.onSameStreet ? 48 : 34;
                             }
                         }
                     }
@@ -4914,10 +4977,158 @@
         }
 
         /**
-         * Passo mirato di 3-opt orientato (senza inversioni di segmento, quindi 100% compatibile con
-         * sensi unici e approccio lato marciapiede) sulle zone di priorità e ordinarie
+         * Ripara automaticamente le sequenze in cui il percorso passa davanti a una fermata ignorandola
+         * (inserendola nel primo passaggio utile) e riordina in modo monotono eventuali blocchi sulla stessa via
          */
-        function orientedThreeOptPass(initialRoute, costMatrix, priorityBoundary, parsedNodes = null) {
+        function repairPassByAndStreetOrder(initialRoute, costMatrix, parsedNodes, passByList, priorityBoundary) {
+            let bestRoute = [...initialRoute];
+            const L = bestRoute.length;
+            if (L <= 3) return bestRoute;
+
+            let bestCost = computeTotalRouteCost(bestRoute, costMatrix, parsedNodes, passByList, priorityBoundary);
+            let improved = true;
+            let guard = 0;
+
+            while (improved && guard < 25) {
+                improved = false;
+                guard++;
+
+                for (let i = 0; i < L - 1; i++) {
+                    const u = bestRoute[i];
+                    const v = bestRoute[i + 1];
+                    const passed = passByList[u]?.[v];
+                    if (!passed || passed.length === 0) continue;
+
+                    for (let k = 0; k < passed.length; k++) {
+                        const info = passed[k];
+                        const posW = bestRoute.indexOf(info.node);
+                        if (posW <= i + 1) continue;
+
+                        const legalInThisZone = info.priority
+                            ? (i < priorityBoundary && posW <= priorityBoundary)
+                            : (i >= priorityBoundary && posW > priorityBoundary);
+                        if (!legalInThisZone) continue;
+
+                        const candidate = [...bestRoute];
+                        candidate.splice(posW, 1);
+                        candidate.splice(i + 1, 0, info.node);
+
+                        const candCost = computeTotalRouteCost(candidate, costMatrix, parsedNodes, passByList, priorityBoundary);
+                        if (candCost + 0.5 < bestCost) {
+                            bestRoute = candidate;
+                            bestCost = candCost;
+                            improved = true;
+                            break;
+                        }
+                    }
+                    if (improved) break;
+                }
+            }
+
+            // Controlla eventuali blocchi consecutivi sulla stessa strada ordinandoli in modo lineare (crescente o decrescente)
+            const zones = [];
+            if (priorityBoundary >= 3) zones.push({ start: 1, end: priorityBoundary });
+            if (L - 2 - priorityBoundary >= 3) zones.push({ start: priorityBoundary + 1, end: L - 2 });
+
+            for (const zone of zones) {
+                let s = zone.start;
+                while (s <= zone.end) {
+                    const st = parsedNodes[bestRoute[s]]?.street;
+                    if (!st || parsedNodes[bestRoute[s]]?.civicNum === null) {
+                        s++;
+                        continue;
+                    }
+                    let e = s;
+                    while (
+                        e + 1 <= zone.end &&
+                        parsedNodes[bestRoute[e + 1]]?.street === st &&
+                        parsedNodes[bestRoute[e + 1]]?.civicNum !== null
+                    ) {
+                        e++;
+                    }
+                    if (e - s + 1 >= 3) {
+                        const seg = bestRoute.slice(s, e + 1);
+                        const asc = [...seg].sort((a, b) => parsedNodes[a].civicNum - parsedNodes[b].civicNum);
+                        const desc = [...asc].reverse();
+                        for (const orderedSeg of [asc, desc]) {
+                            const candidate = [
+                                ...bestRoute.slice(0, s),
+                                ...orderedSeg,
+                                ...bestRoute.slice(e + 1)
+                            ];
+                            const candCost = computeTotalRouteCost(candidate, costMatrix, parsedNodes, passByList, priorityBoundary);
+                            if (candCost + 0.5 < bestCost) {
+                                bestRoute = candidate;
+                                bestCost = candCost;
+                            }
+                        }
+                    }
+                    s = e + 1;
+                }
+            }
+
+            return bestRoute;
+        }
+
+        /**
+         * Rifinitura a spostamento singolo valutata con la funzione obiettivo completa
+         * (include penalità pass-by e anti-inversione sulla stessa strada)
+         */
+        function fullObjectiveRelocatePass(initialRoute, costMatrix, parsedNodes, passByList, priorityBoundary) {
+            let bestRoute = [...initialRoute];
+            const L = bestRoute.length;
+            if (L <= 4) return bestRoute;
+
+            const zones = [];
+            if (priorityBoundary >= 2) zones.push({ start: 1, end: priorityBoundary });
+            if (L - 2 - priorityBoundary >= 2) zones.push({ start: priorityBoundary + 1, end: L - 2 });
+
+            let bestCost = computeTotalRouteCost(bestRoute, costMatrix, parsedNodes, passByList, priorityBoundary);
+            let improved = true;
+            let passes = 0;
+
+            while (improved && passes < 6) {
+                improved = false;
+                passes++;
+
+                for (const zone of zones) {
+                    for (let i = zone.start; i <= zone.end; i++) {
+                        const node = bestRoute[i];
+                        let bestTarget = -1;
+                        let localBestCost = bestCost;
+
+                        for (let target = zone.start; target <= zone.end; target++) {
+                            if (target === i) continue;
+                            const candidate = [...bestRoute];
+                            candidate.splice(i, 1);
+                            candidate.splice(target, 0, node);
+                            const candCost = computeTotalRouteCost(candidate, costMatrix, parsedNodes, passByList, priorityBoundary);
+                            if (candCost + 0.5 < localBestCost) {
+                                localBestCost = candCost;
+                                bestTarget = target;
+                            }
+                        }
+
+                        if (bestTarget !== -1) {
+                            bestRoute.splice(i, 1);
+                            bestRoute.splice(bestTarget, 0, node);
+                            bestCost = localBestCost;
+                            improved = true;
+                            break;
+                        }
+                    }
+                    if (improved) break;
+                }
+            }
+
+            return bestRoute;
+        }
+
+        /**
+         * Passo mirato di 3-opt orientato (senza inversioni di segmento, quindi 100% compatibile con
+         * sensi unici e viabilità reale) sulle zone di priorità e ordinarie
+         */
+        function orientedThreeOptPass(initialRoute, costMatrix, priorityBoundary, parsedNodes = null, passByList = null) {
             let bestRoute = [...initialRoute];
             const L = bestRoute.length;
             if (L < 6) return bestRoute;
@@ -4930,7 +5141,7 @@
                 zones.push({ start: priorityBoundary + 1, end: L - 2 });
             }
 
-            let bestCost = computeTotalRouteCost(bestRoute, costMatrix, parsedNodes);
+            let bestCost = computeTotalRouteCost(bestRoute, costMatrix, parsedNodes, passByList, priorityBoundary);
             let improved = true;
             let passes = 0;
 
@@ -4956,14 +5167,14 @@
                                     (costMatrix[u][c] + costMatrix[d][a] + costMatrix[b][v]) -
                                     (costMatrix[u][a] + costMatrix[b][c] + costMatrix[d][v]);
 
-                                if (edgeDelta < 18) {
+                                if (edgeDelta < 45) {
                                     const candidate = [
                                         ...bestRoute.slice(0, i),
                                         ...bestRoute.slice(j + 1, k + 1),
                                         ...bestRoute.slice(i, j + 1),
                                         ...bestRoute.slice(k + 1)
                                     ];
-                                    const candCost = computeTotalRouteCost(candidate, costMatrix, parsedNodes);
+                                    const candCost = computeTotalRouteCost(candidate, costMatrix, parsedNodes, passByList, priorityBoundary);
                                     if (candCost + 0.5 < bestCost) {
                                         bestRoute = candidate;
                                         bestCost = candCost;
@@ -5077,6 +5288,7 @@
             const n = allNodes.length;
             const costMatrix = buildHybridCostMatrix(allNodes, durationMatrix, distanceMatrix);
             const parsedNodes = allNodes.map(node => extractStreetAndCivicNumeric(node.address));
+            const passByList = buildPassByMatrix(allNodes, durationMatrix, distanceMatrix, parsedNodes);
 
             if (n <= 2) {
                 const trivialRoute = n === 2 ? [0, 1] : [0];
@@ -5221,9 +5433,10 @@
             const uniqueVariantsMap = new Map();
 
             const registerCandidateRoute = (rawRoute) => {
-                const optimized = localSearchOptimizeRoute(rawRoute, allNodes, costMatrix, priorityBoundary);
+                const localOpt = localSearchOptimizeRoute(rawRoute, allNodes, costMatrix, priorityBoundary);
+                const optimized = repairPassByAndStreetOrder(localOpt, costMatrix, parsedNodes, passByList, priorityBoundary);
                 const sig = optimized.slice(1, -1).join(",");
-                const hybridCost = computeTotalRouteCost(optimized, costMatrix, parsedNodes);
+                const hybridCost = computeTotalRouteCost(optimized, costMatrix, parsedNodes, passByList, priorityBoundary);
                 const existing = uniqueVariantsMap.get(sig);
                 if (!existing || hybridCost < existing.hybridCost) {
                     const stats = computeRouteStatsFromMatrices(optimized, allNodes, durationMatrix, distanceMatrix);
@@ -5318,7 +5531,7 @@
                             const stats = computeRouteStatsFromMatrices(swapped, allNodes, durationMatrix, distanceMatrix);
                             uniqueVariantsMap.set(sig, {
                                 routeIndices: swapped,
-                                hybridCost: computeTotalRouteCost(swapped, costMatrix, parsedNodes),
+                                hybridCost: computeTotalRouteCost(swapped, costMatrix, parsedNodes, passByList, priorityBoundary),
                                 totalDurationSec: stats.totalDurationSec,
                                 totalDistanceMeters: stats.totalDistanceMeters
                             });
@@ -5329,9 +5542,10 @@
 
             // Fase 3: Varianti strutturalmente alternative (percorso a km minimi + anti-sovrapposizione archi)
             const registerWithSpecificMatrix = (rawRoute, activeMatrix) => {
-                const optimized = localSearchOptimizeRoute(rawRoute, allNodes, activeMatrix, priorityBoundary);
+                const localOpt = localSearchOptimizeRoute(rawRoute, allNodes, activeMatrix, priorityBoundary);
+                const optimized = repairPassByAndStreetOrder(localOpt, costMatrix, parsedNodes, passByList, priorityBoundary);
                 const sig = optimized.slice(1, -1).join(",");
-                const trueHybridCost = computeTotalRouteCost(optimized, costMatrix, parsedNodes);
+                const trueHybridCost = computeTotalRouteCost(optimized, costMatrix, parsedNodes, passByList, priorityBoundary);
                 const existing = uniqueVariantsMap.get(sig);
                 if (!existing || trueHybridCost < existing.hybridCost) {
                     const stats = computeRouteStatsFromMatrices(optimized, allNodes, durationMatrix, distanceMatrix);
@@ -5385,15 +5599,17 @@
                 }
             }
 
-            // Rifinitura finale con passo unico di 3-opt orientato sulle migliori varianti candidate
+            // Rifinitura finale con 3-opt orientato, riallocazione globale e controllo pass-by sulle migliori candidate
             const topFinalists = Array.from(uniqueVariantsMap.values())
                 .sort((a, b) => a.hybridCost - b.hybridCost)
-                .slice(0, 6);
+                .slice(0, 8);
 
             for (const cand of topFinalists) {
-                const refinedRoute = orientedThreeOptPass(cand.routeIndices, costMatrix, priorityBoundary, parsedNodes);
+                let refinedRoute = orientedThreeOptPass(cand.routeIndices, costMatrix, priorityBoundary, parsedNodes, passByList);
+                refinedRoute = fullObjectiveRelocatePass(refinedRoute, costMatrix, parsedNodes, passByList, priorityBoundary);
+                refinedRoute = repairPassByAndStreetOrder(refinedRoute, costMatrix, parsedNodes, passByList, priorityBoundary);
                 const sig = refinedRoute.slice(1, -1).join(",");
-                const refinedCost = computeTotalRouteCost(refinedRoute, costMatrix, parsedNodes);
+                const refinedCost = computeTotalRouteCost(refinedRoute, costMatrix, parsedNodes, passByList, priorityBoundary);
                 const existing = uniqueVariantsMap.get(sig);
                 if (!existing || refinedCost < existing.hybridCost) {
                     const stats = computeRouteStatsFromMatrices(refinedRoute, allNodes, durationMatrix, distanceMatrix);
@@ -5505,23 +5721,13 @@
 
         async function fetchOSRMRouteGeometry(orderedNodes) {
             const coordsParam = orderedNodes.map(n => `${n.lon.toFixed(6)},${n.lat.toFixed(6)}`).join(";");
-            const approachesParam = orderedNodes
-                .map(n => (n.type === "stop" && n.curbAllowed !== false ? "curb" : "unrestricted"))
-                .join(";");
-
-            const urlWithCurb = `https://router.project-osrm.org/route/v1/driving/${coordsParam}?overview=full&geometries=geojson&approaches=${approachesParam}`;
             const urlStandard = `https://router.project-osrm.org/route/v1/driving/${coordsParam}?overview=full&geometries=geojson`;
 
-            let res = await fetchWithTimeout(urlWithCurb, 9000);
-            let data = res.ok ? await res.json() : null;
-
-            if (!data || data.code !== "Ok" || !Array.isArray(data.routes?.[0]?.geometry?.coordinates)) {
-                res = await fetchWithTimeout(urlStandard, 9000);
-                if (!res.ok) {
-                    throw new Error(`OSRM Route HTTP ${res.status}`);
-                }
-                data = await res.json();
+            const res = await fetchWithTimeout(urlStandard, 9000);
+            if (!res.ok) {
+                throw new Error(`OSRM Route HTTP ${res.status}`);
             }
+            const data = await res.json();
 
             const bestRoute = data?.routes?.[0];
             if (data.code !== "Ok" || !bestRoute || !Array.isArray(bestRoute.geometry?.coordinates)) {

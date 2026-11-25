@@ -3979,18 +3979,45 @@
                     }
 
                     if (Number.isFinite(requestedCivicNum)) {
+                        const requestedParity = requestedCivicNum % 2;
+                        let lowerSame = null, upperSame = null;
+                        let lowerAny = null, upperAny = null;
                         let bestClosest = null;
                         let bestDiff = Infinity;
+
                         for (const entry of entries) {
                             const nVal = parseInt(String(entry[0]).replace(/\D/g, ""), 10);
-                            if (Number.isFinite(nVal)) {
-                                const diff = Math.abs(nVal - requestedCivicNum);
-                                if (diff < bestDiff) {
-                                    bestDiff = diff;
-                                    bestClosest = entry;
-                                }
+                            if (!Number.isFinite(nVal)) continue;
+
+                            const diff = Math.abs(nVal - requestedCivicNum);
+                            if (diff < bestDiff) {
+                                bestDiff = diff;
+                                bestClosest = entry;
+                            }
+
+                            const isSameParity = (nVal % 2) === requestedParity;
+                            if (nVal < requestedCivicNum) {
+                                if (!lowerAny || nVal > lowerAny.num) lowerAny = { num: nVal, lat: entry[1], lon: entry[2] };
+                                if (isSameParity && (!lowerSame || nVal > lowerSame.num)) lowerSame = { num: nVal, lat: entry[1], lon: entry[2] };
+                            } else if (nVal > requestedCivicNum) {
+                                if (!upperAny || nVal < upperAny.num) upperAny = { num: nVal, lat: entry[1], lon: entry[2] };
+                                if (isSameParity && (!upperSame || nVal < upperSame.num)) upperSame = { num: nVal, lat: entry[1], lon: entry[2] };
                             }
                         }
+
+                        // Interpolazione lineare tra civico precedente e successivo per mantenere l'ordine esatto lungo la via
+                        const bracketLow = (lowerSame && upperSame) ? lowerSame : lowerAny;
+                        const bracketHigh = (lowerSame && upperSame) ? upperSame : upperAny;
+                        if (bracketLow && bracketHigh && bracketHigh.num > bracketLow.num && (bracketHigh.num - bracketLow.num) <= 120) {
+                            const t = (requestedCivicNum - bracketLow.num) / (bracketHigh.num - bracketLow.num);
+                            return {
+                                lat: bracketLow.lat + (bracketHigh.lat - bracketLow.lat) * t,
+                                lon: bracketLow.lon + (bracketHigh.lon - bracketLow.lon) * t,
+                                displayName: `${parsed.street} ${parsed.houseNumber}${cityLabel ? ", " + cityLabel : ""} (Mappa Locale ~${bracketLow.num}-${bracketHigh.num})`,
+                                exactCivic: true
+                            };
+                        }
+
                         if (bestClosest && bestDiff <= 40) {
                             return {
                                 lat: bestClosest[1],
@@ -4556,13 +4583,107 @@
             return { street, civicNum };
         }
 
+        /**
+         * Stima per interpolazione lineare la posizione dei civici non censiti (exactCivic === false)
+         * usando gli altri civici noti della stessa via presenti nel giro o nell'atlante locale,
+         * impedendo che più consegne sulla stessa strada collassino sullo stesso punto centrale
+         */
+        function interpolateMissingStreetCivics(validStops) {
+            if (!Array.isArray(validStops) || validStops.length === 0) return;
+            const atlas = loadOfflineAtlas();
+            const parsedList = validStops.map(s => extractStreetAndCivicNumeric(s.address));
+            const stopsByStreet = new Map();
+
+            validStops.forEach((stop, idx) => {
+                const st = parsedList[idx].street;
+                if (!st) return;
+                if (!stopsByStreet.has(st)) stopsByStreet.set(st, []);
+                stopsByStreet.get(st).push({ stop, civicNum: parsedList[idx].civicNum });
+            });
+
+            stopsByStreet.forEach((group, streetName) => {
+                const needsEstimate = group.filter(item => !item.stop.exactCivic && item.civicNum !== null);
+                if (needsEstimate.length === 0) return;
+
+                // Raccoglie punti di ancoraggio certi dal giro corrente e dall'atlante offline
+                const anchorsMap = new Map();
+                group.forEach(({ stop, civicNum }) => {
+                    if (stop.exactCivic && civicNum !== null && Number.isFinite(stop.lat) && Number.isFinite(stop.lon)) {
+                        if (!anchorsMap.has(civicNum)) {
+                            anchorsMap.set(civicNum, { num: civicNum, lat: stop.lat, lon: stop.lon });
+                        }
+                    }
+                });
+
+                const streetNorm = normalizeStreetKeyForAtlas(streetName);
+                Object.keys(atlas.streets || {}).forEach((k) => {
+                    if (k.split("|")[0] !== streetNorm) return;
+                    const entries = atlas.streets[k] || [];
+                    for (const entry of entries) {
+                        const nVal = parseInt(String(entry[0]).replace(/\D/g, ""), 10);
+                        if (Number.isFinite(nVal) && !anchorsMap.has(nVal)) {
+                            anchorsMap.set(nVal, { num: nVal, lat: entry[1], lon: entry[2] });
+                        }
+                    }
+                });
+
+                const anchors = Array.from(anchorsMap.values()).sort((a, b) => a.num - b.num);
+                if (anchors.length < 2) return;
+
+                for (const item of needsEstimate) {
+                    const targetNum = item.civicNum;
+                    let low = null;
+                    let high = null;
+
+                    for (let k = 0; k < anchors.length; k++) {
+                        if (anchors[k].num < targetNum) {
+                            low = anchors[k];
+                        } else if (anchors[k].num > targetNum) {
+                            high = anchors[k];
+                            break;
+                        }
+                    }
+
+                    if (low && high && high.num > low.num) {
+                        const t = (targetNum - low.num) / (high.num - low.num);
+                        item.stop.lat = low.lat + (high.lat - low.lat) * t;
+                        item.stop.lon = low.lon + (high.lon - low.lon) * t;
+                    } else if (!low && anchors.length >= 2) {
+                        const a = anchors[0];
+                        const b = anchors[1];
+                        const span = b.num - a.num;
+                        const segKm = haversineKm(a.lat, a.lon, b.lat, b.lon);
+                        if (span > 0 && segKm > 0.005) {
+                            const maxRatio = Math.min(0.6, 0.15 / segKm);
+                            const ratio = Math.min(maxRatio, (a.num - targetNum) / span);
+                            item.stop.lat = a.lat - (b.lat - a.lat) * ratio;
+                            item.stop.lon = a.lon - (b.lon - a.lon) * ratio;
+                        }
+                    } else if (!high && anchors.length >= 2) {
+                        const a = anchors[anchors.length - 2];
+                        const b = anchors[anchors.length - 1];
+                        const span = b.num - a.num;
+                        const segKm = haversineKm(a.lat, a.lon, b.lat, b.lon);
+                        if (span > 0 && segKm > 0.005) {
+                            const maxRatio = Math.min(0.6, 0.15 / segKm);
+                            const ratio = Math.min(maxRatio, (targetNum - b.num) / span);
+                            item.stop.lat = b.lat + (b.lat - a.lat) * ratio;
+                            item.stop.lon = b.lon + (b.lon - a.lon) * ratio;
+                        }
+                    }
+                }
+            });
+        }
+
         function buildWalkStopClusters(validStops, thresholdMeters = 50) {
             const visited = new Array(validStops.length).fill(false);
+            const stopStreets = validStops.map(s => extractStreetAndCivicNumeric(s.address).street);
             const clusters = [];
 
             for (let i = 0; i < validStops.length; i++) {
                 if (visited[i]) continue;
                 const members = [validStops[i]];
+                const memberIndices = [i];
                 visited[i] = true;
 
                 let changed = true;
@@ -4572,11 +4693,18 @@
                         if (visited[j]) continue;
                         if (Boolean(validStops[j].priority) !== Boolean(validStops[i].priority)) continue;
 
-                        const isCloseToCluster = members.some(
-                            m => haversineKm(m.lat, m.lon, validStops[j].lat, validStops[j].lon) * 1000 <= thresholdMeters
-                        );
+                        // Unisce nel cluster pedonale a 50m solo i civici della stessa strada (o esattamente sullo stesso incrocio entro 12m)
+                        // per evitare di fondere due vie parallele separate da edifici/muri
+                        const isCloseToCluster = memberIndices.some((mIdx) => {
+                            const m = validStops[mIdx];
+                            const distM = haversineKm(m.lat, m.lon, validStops[j].lat, validStops[j].lon) * 1000;
+                            if (distM <= 12) return true;
+                            if (distM > thresholdMeters) return false;
+                            return Boolean(stopStreets[mIdx] && stopStreets[mIdx] === stopStreets[j]);
+                        });
                         if (isCloseToCluster) {
                             members.push(validStops[j]);
+                            memberIndices.push(j);
                             visited[j] = true;
                             changed = true;
                         }
@@ -4681,9 +4809,66 @@
             };
         }
 
-        function buildHybridCostMatrix(allNodes, durationMatrix, distanceMatrix) {
+        /**
+         * Estrae chiave stradale canonica (unificando abbreviazioni tipo "S."/"San", "V.le"/"Viale" e comune)
+         * e numero civico intero per il raggruppamento Street-First
+         */
+        function extractCanonicalRoutingNodeInfo(rawAddress) {
+            const defaultCity = getDefaultMunicipality();
+            const parsed = parseItalianAddress(rawAddress, defaultCity);
+            const expandedStreet = expandItalianStreetAbbreviations(parsed.street || "");
+            const streetNorm = expandedStreet
+                .toLowerCase()
+                .normalize("NFD")
+                .replace(/[\u0300-\u036f]/g, "")
+                .replace(/[^a-z0-9\s]/g, " ")
+                .replace(/\s+/g, " ")
+                .trim();
+            const cityNorm = (parsed.city || "")
+                .toLowerCase()
+                .normalize("NFD")
+                .replace(/[\u0300-\u036f]/g, "")
+                .replace(/[^a-z0-9\s]/g, " ")
+                .replace(/\s+/g, " ")
+                .trim();
+            const street = streetNorm ? (cityNorm ? `${streetNorm}|${cityNorm}` : streetNorm) : "";
+            const numMatch = (parsed.houseNumber || "").match(/^(\d+)/);
+            const civicNum = numMatch ? parseInt(numMatch[1], 10) : null;
+            return { street, streetOnly: streetNorm, civicNum };
+        }
+
+        function assignNodeStreetIds(parsedNodes) {
+            const idMap = new Map();
+            let nextId = 0;
+            for (let i = 0; i < parsedNodes.length; i++) {
+                const st = parsedNodes[i]?.street || "";
+                if (!st) {
+                    parsedNodes[i].streetId = -1;
+                } else {
+                    let id = idMap.get(st);
+                    if (id === undefined) {
+                        id = nextId++;
+                        idMap.set(st, id);
+                    }
+                    parsedNodes[i].streetId = id;
+                }
+            }
+            return nextId;
+        }
+
+        function createRouteEvalScratch(numNodes, numStreets) {
+            return {
+                posOf: new Int32Array(numNodes),
+                prefixDist: new Float64Array(numNodes + 1),
+                lastStreetPos: new Int16Array(Math.max(1, numStreets)),
+                lastStreetCivic: new Int32Array(Math.max(1, numStreets)),
+                lastStreetDir: new Int8Array(Math.max(1, numStreets))
+            };
+        }
+
+        function buildHybridCostMatrix(allNodes, durationMatrix, distanceMatrix, preParsedNodes = null) {
             const n = allNodes.length;
-            const parsedNodes = allNodes.map(node => extractStreetAndCivicNumeric(node.address));
+            const parsedNodes = preParsedNodes || allNodes.map(node => extractCanonicalRoutingNodeInfo(node.address));
 
             return Array.from({ length: n }, (_, i) =>
                 Array.from({ length: n }, (_, j) => {
@@ -4691,16 +4876,13 @@
                     const leg = getEffectiveLegMetrics(i, j, allNodes, durationMatrix, distanceMatrix);
                     const timeSec = leg.durationSec;
                     const distKm = leg.distanceMeters / 1000;
-                    // Costo strettamente proporzionale al percorso stradale reale:
-                    // evita sconti negativi/clamping a 1 e penalità pari/dispari che portavano a saltare i civici lungo la via
-                    let cost = timeSec + distKm * 18;
+                    let cost = timeSec * 0.75 + distKm * 36;
 
                     if (i > 0 && j > 0 && i < n - 1 && j < n - 1) {
                         const a = parsedNodes[i];
                         const b = parsedNodes[j];
-                        // Piccola penalità solo quando si cambia via, così da completare la strada corrente senza distorcere le distanze
-                        if (a.street && b.street && a.street !== b.street && distKm > 0.12) {
-                            cost += 12;
+                        if (a.street && b.street && a.street !== b.street && distKm > 0.10) {
+                            cost += 16;
                         }
                     }
                     return Math.max(1, cost);
@@ -4738,7 +4920,6 @@
                         if (w === u || w === v) continue;
                         const dUW = distanceMatrix[u][w] || 0;
                         const dWV = distanceMatrix[w][v] || 0;
-                        // w deve trovarsi strettamente in avanti rispetto a u e prima di v
                         if (dUW >= dUV || dWV >= dUV) continue;
 
                         const detourDist = dUW + dWV - dUV;
@@ -4778,19 +4959,41 @@
         }
 
         /**
-         * Calcola il costo complessivo includendo:
-         * - continuità di progressione lungo la stessa via (evita zig-zag e inversioni a U)
-         * - penalità se una tratta passa direttamente davanti a una consegna non ancora effettuata
+         * Funzione obiettivo completa Street-First:
+         * 1. Costo stradale reale (distanza + tempo + cambio via);
+         * 2. Continuità monotona dei civici sulla stessa strada (zero inversioni / zig-zag);
+         * 3. Coesione Street-First: penalizza l'abbandono di una via per tornarci dopo (consentendo solo
+         *    brevi deviazioni <= 350m dentro una traversa/vicolo adiacente lungo la stessa direttrice);
+         * 4. Penalità Pass-By se una tratta passa davanti a una consegna non ancora servita.
          */
-        function computeTotalRouteCost(route, costMatrix, parsedNodes = null, passByList = null, priorityBoundary = 0) {
+        function computeTotalRouteCost(
+            route,
+            costMatrix,
+            parsedNodes = null,
+            passByList = null,
+            priorityBoundary = 0,
+            distanceMatrix = null,
+            scratch = null
+        ) {
             let total = 0;
             const L = route.length;
-            let posOf = null;
+            const n = costMatrix.length;
 
+            let posOf = null;
             if (passByList) {
-                posOf = new Int32Array(costMatrix.length).fill(-1);
+                posOf = scratch ? scratch.posOf : new Int32Array(n);
+                posOf.fill(-1);
                 for (let idx = 0; idx < L; idx++) {
                     posOf[route[idx]] = idx;
+                }
+            }
+
+            let prefixDist = null;
+            if (parsedNodes && distanceMatrix) {
+                prefixDist = scratch ? scratch.prefixDist : new Float64Array(L + 1);
+                prefixDist[0] = 0;
+                for (let i = 0; i < L - 1; i++) {
+                    prefixDist[i + 1] = prefixDist[i] + (distanceMatrix[route[i]][route[i + 1]] || 0);
                 }
             }
 
@@ -4811,9 +5014,9 @@
                         const d2 = p3.civicNum - p2.civicNum;
                         if (d1 !== 0 && d2 !== 0) {
                             if ((d1 > 0 && d2 < 0) || (d1 < 0 && d2 > 0)) {
-                                total += 42;
+                                total += 65;
                             } else {
-                                total -= 4;
+                                total -= 5;
                             }
                         }
                     }
@@ -4832,12 +5035,80 @@
                                 : (i >= priorityBoundary && posW > priorityBoundary);
 
                             if (legalInThisZone) {
-                                total += info.onSameStreet ? 48 : 34;
+                                total += info.onSameStreet ? 72 : 48;
                             }
                         }
                     }
                 }
             }
+
+            // Controllo coesione Street-First separato per fascia Priorità e fascia Ordinaria
+            if (parsedNodes && distanceMatrix && prefixDist && L > 4) {
+                const lastPos = scratch ? scratch.lastStreetPos : new Int16Array(n);
+                const lastCivic = scratch ? scratch.lastStreetCivic : new Int32Array(n);
+                const lastDir = scratch ? scratch.lastStreetDir : new Int8Array(n);
+
+                const evalZoneCohesion = (zStart, zEnd) => {
+                    if (zEnd - zStart < 2) return;
+                    lastPos.fill(-1);
+                    lastCivic.fill(-1);
+                    lastDir.fill(0);
+
+                    for (let pos = zStart; pos <= zEnd; pos++) {
+                        const nodeIdx = route[pos];
+                        const p = parsedNodes[nodeIdx];
+                        const stId = p?.streetId ?? -1;
+                        if (stId < 0) continue;
+
+                        const prevPos = lastPos[stId];
+                        if (prevPos !== -1) {
+                            const prevNode = route[prevPos];
+                            const curCivic = p.civicNum;
+                            const prevCiv = lastCivic[stId];
+                            let stepDir = 0;
+                            if (curCivic !== null && prevCiv !== -1 && curCivic !== prevCiv) {
+                                stepDir = curCivic > prevCiv ? 1 : -1;
+                            }
+
+                            if (prevPos < pos - 1) {
+                                const dFwd = distanceMatrix[prevNode][nodeIdx] || 0;
+                                const dRev = distanceMatrix[nodeIdx][prevNode] || 0;
+                                const dDirect = Math.min(dFwd || Infinity, dRev || Infinity);
+
+                                if (dDirect <= 850) {
+                                    const interDist = prefixDist[pos] - prefixDist[prevPos];
+                                    const refDirect = dFwd > 0 ? dFwd : dDirect;
+                                    const extraDetour = interDist - refDirect;
+
+                                    // Consente solo micro-deviazioni in una traversa adiacente (<= 350m),
+                                    // penalizzando severamente lo spezzettamento della via a distanza
+                                    if (extraDetour > 350) {
+                                        total += 95 + Math.min(95, (extraDetour - 350) * 0.08);
+                                    }
+                                    if (stepDir !== 0 && lastDir[stId] !== 0 && stepDir !== lastDir[stId]) {
+                                        total += 45;
+                                    }
+                                }
+                            }
+
+                            if (stepDir !== 0) {
+                                lastDir[stId] = stepDir;
+                            }
+                        }
+
+                        lastPos[stId] = pos;
+                        lastCivic[stId] = p.civicNum !== null ? p.civicNum : -1;
+                    }
+                };
+
+                if (priorityBoundary >= 3) {
+                    evalZoneCohesion(1, priorityBoundary);
+                }
+                if (L - 2 - priorityBoundary >= 3) {
+                    evalZoneCohesion(priorityBoundary + 1, L - 2);
+                }
+            }
+
             return total;
         }
 
@@ -4853,6 +5124,949 @@
                 totalDurationSec: Math.round(totalDurationSec),
                 totalDistanceMeters: Math.round(totalDistanceMeters)
             };
+        }
+
+        /**
+         * ============================================================================
+         * MOTORE STREET-FIRST (CORRIDOI STRADALI ORIENTATI & GENERALIZED TSP)
+         * ============================================================================
+         * Comprime i pacchi della stessa strada in corridoi orientati percorribili
+         * in senso crescente o decrescente (eliminando finte inversioni e sensi unici
+         * contrromano), risolvendo poi l'ordine ottimale delle strade e il loro verso.
+         */
+        function orderStopsAlongStreetAxis(groupIndices, allNodes, distanceMatrix, parsedNodes) {
+            if (groupIndices.length <= 1) return [...groupIndices];
+
+            // Asse principale geografico della strada (tra i due punti più distanti)
+            let pA = groupIndices[0];
+            let pB = groupIndices[1];
+            let maxSpan = -1;
+            for (let i = 0; i < groupIndices.length; i++) {
+                for (let j = i + 1; j < groupIndices.length; j++) {
+                    const d = haversineKm(
+                        allNodes[groupIndices[i]].lat,
+                        allNodes[groupIndices[i]].lon,
+                        allNodes[groupIndices[j]].lat,
+                        allNodes[groupIndices[j]].lon
+                    );
+                    if (d > maxSpan) {
+                        maxSpan = d;
+                        pA = groupIndices[i];
+                        pB = groupIndices[j];
+                    }
+                }
+            }
+
+            const cosLat = Math.max(0.2, Math.cos(allNodes[pA].lat * Math.PI / 180));
+            let axisX = (allNodes[pB].lon - allNodes[pA].lon) * cosLat;
+            let axisY = allNodes[pB].lat - allNodes[pA].lat;
+            const norm = Math.hypot(axisX, axisY) || 1;
+            axisX /= norm;
+            axisY /= norm;
+
+            const projectNode = (idx) => {
+                const dx = (allNodes[idx].lon - allNodes[pA].lon) * cosLat;
+                const dy = allNodes[idx].lat - allNodes[pA].lat;
+                return dx * axisX + dy * axisY;
+            };
+
+            const withCivic = groupIndices.filter(idx => parsedNodes[idx]?.civicNum !== null);
+            const withoutCivic = groupIndices.filter(idx => parsedNodes[idx]?.civicNum === null);
+
+            if (withCivic.length >= 2) {
+                withCivic.sort((a, b) => {
+                    const diff = parsedNodes[a].civicNum - parsedNodes[b].civicNum;
+                    return diff !== 0 ? diff : projectNode(a) - projectNode(b);
+                });
+                if (projectNode(withCivic[withCivic.length - 1]) < projectNode(withCivic[0])) {
+                    axisX = -axisX;
+                    axisY = -axisY;
+                }
+            }
+
+            if (withCivic.length === 0) {
+                return [...groupIndices].sort((a, b) => projectNode(a) - projectNode(b));
+            }
+
+            // Inserisce eventuali indirizzi "snc" (senza civico) nella posizione stradale a minima deviazione
+            const ordered = [...withCivic];
+            for (const sncIdx of withoutCivic) {
+                let bestPos = 0;
+                let bestDetour = Infinity;
+                for (let pos = 0; pos <= ordered.length; pos++) {
+                    let detour = 0;
+                    if (pos === 0) {
+                        detour = distanceMatrix[sncIdx][ordered[0]] || 0;
+                    } else if (pos === ordered.length) {
+                        detour = distanceMatrix[ordered[ordered.length - 1]][sncIdx] || 0;
+                    } else {
+                        const prev = ordered[pos - 1];
+                        const next = ordered[pos];
+                        detour =
+                            (distanceMatrix[prev][sncIdx] || 0) +
+                            (distanceMatrix[sncIdx][next] || 0) -
+                            (distanceMatrix[prev][next] || 0);
+                    }
+                    if (detour < bestDetour) {
+                        bestDetour = detour;
+                        bestPos = pos;
+                    }
+                }
+                ordered.splice(bestPos, 0, sncIdx);
+            }
+
+            return ordered;
+        }
+
+        function buildStreetCorridors(zoneIndices, allNodes, costMatrix, distanceMatrix, parsedNodes) {
+            if (!Array.isArray(zoneIndices) || zoneIndices.length === 0) return [];
+
+            const byStreet = new Map();
+            const singletons = [];
+
+            for (const idx of zoneIndices) {
+                const stId = parsedNodes[idx]?.streetId ?? -1;
+                if (stId < 0) {
+                    singletons.push([idx]);
+                } else {
+                    if (!byStreet.has(stId)) byStreet.set(stId, []);
+                    byStreet.get(stId).push(idx);
+                }
+            }
+
+            const rawSegments = [...singletons];
+
+            const computePathDist = (seq) => {
+                let sum = 0;
+                for (let t = 0; t < seq.length - 1; t++) {
+                    sum += distanceMatrix[seq[t]][seq[t + 1]] || 0;
+                }
+                return sum;
+            };
+
+            byStreet.forEach((group) => {
+                if (group.length === 1) {
+                    rawSegments.push(group);
+                    return;
+                }
+
+                const sorted = orderStopsAlongStreetAxis(group, allNodes, distanceMatrix, parsedNodes);
+
+                // 1. Spezza una via lunghissima in tratti contigui se c'è un salto > 650m in linea d'aria o > 900m su strada
+                let curSeg = [sorted[0]];
+                const contiguousSegments = [];
+                for (let i = 1; i < sorted.length; i++) {
+                    const prev = sorted[i - 1];
+                    const curr = sorted[i];
+                    const straightM = haversineKm(allNodes[prev].lat, allNodes[prev].lon, allNodes[curr].lat, allNodes[curr].lon) * 1000;
+                    const minRoadM = Math.min(
+                        distanceMatrix[prev][curr] || Infinity,
+                        distanceMatrix[curr][prev] || Infinity
+                    );
+
+                    if (straightM > 650 || minRoadM > 900) {
+                        contiguousSegments.push(curSeg);
+                        curSeg = [curr];
+                    } else {
+                        curSeg.push(curr);
+                    }
+                }
+                contiguousSegments.push(curSeg);
+
+                // 2. Verifica automatica viali a doppia carreggiata con spartitraffico centrale
+                for (const seg of contiguousSegments) {
+                    if (seg.length >= 3) {
+                        const evens = seg.filter(idx => parsedNodes[idx].civicNum !== null && parsedNodes[idx].civicNum % 2 === 0);
+                        const odds = seg.filter(idx => parsedNodes[idx].civicNum !== null && parsedNodes[idx].civicNum % 2 !== 0);
+                        const noCiv = seg.filter(idx => parsedNodes[idx].civicNum === null);
+
+                        if (evens.length >= 1 && odds.length >= 1 && noCiv.length === 0) {
+                            const monoDist = Math.min(computePathDist(seg), computePathDist([...seg].reverse()));
+                            const evenBest = Math.min(computePathDist(evens), computePathDist([...evens].reverse()));
+                            const oddBest = Math.min(computePathDist(odds), computePathDist([...odds].reverse()));
+                            const eEnds = [evens[0], evens[evens.length - 1]];
+                            const oEnds = [odds[0], odds[odds.length - 1]];
+                            let minTurn = Infinity;
+                            for (const eNode of eEnds) {
+                                for (const oNode of oEnds) {
+                                    minTurn = Math.min(
+                                        minTurn,
+                                        distanceMatrix[eNode][oNode] || Infinity,
+                                        distanceMatrix[oNode][eNode] || Infinity
+                                    );
+                                }
+                            }
+                            if (!Number.isFinite(minTurn)) minTurn = 0;
+
+                            if (monoDist > (evenBest + oddBest + minTurn) * 1.35 + 350) {
+                                rawSegments.push(evens, odds);
+                                continue;
+                            }
+                        }
+                    }
+                    rawSegments.push(seg);
+                }
+            });
+
+            // 3. Costruisce i corridoi orientati calcolando costi interni reali e filtrando i sensi unici contrari
+            const corridors = rawSegments.map((seg, cIdx) => {
+                const cLat = seg.reduce((acc, idx) => acc + allNodes[idx].lat, 0) / seg.length;
+                const cLon = seg.reduce((acc, idx) => acc + allNodes[idx].lon, 0) / seg.length;
+                const streetId = parsedNodes[seg[0]]?.streetId ?? -1;
+
+                if (seg.length === 1) {
+                    const only = seg[0];
+                    return {
+                        id: cIdx,
+                        streetId,
+                        isSingle: true,
+                        centroidLat: cLat,
+                        centroidLon: cLon,
+                        orientations: [
+                            { nodes: [only], entry: only, exit: only, internalCost: 0, internalDist: 0 }
+                        ]
+                    };
+                }
+
+                const fwdNodes = [...seg];
+                const revNodes = [...seg].reverse();
+                let fwdCost = 0, revCost = 0, fwdDist = 0, revDist = 0;
+
+                for (let t = 0; t < fwdNodes.length - 1; t++) {
+                    fwdCost += costMatrix[fwdNodes[t]][fwdNodes[t + 1]];
+                    fwdDist += distanceMatrix[fwdNodes[t]][fwdNodes[t + 1]] || 0;
+                    revCost += costMatrix[revNodes[t]][revNodes[t + 1]];
+                    revDist += distanceMatrix[revNodes[t]][revNodes[t + 1]] || 0;
+                }
+
+                const oriFwd = {
+                    nodes: fwdNodes,
+                    entry: fwdNodes[0],
+                    exit: fwdNodes[fwdNodes.length - 1],
+                    internalCost: fwdCost,
+                    internalDist: fwdDist
+                };
+                const oriRev = {
+                    nodes: revNodes,
+                    entry: revNodes[0],
+                    exit: revNodes[revNodes.length - 1],
+                    internalCost: revCost,
+                    internalDist: revDist
+                };
+
+                let orientations = [oriFwd, oriRev];
+                // Se un verso richiede >2.1x km + 220m rispetto all'opposto, la strada è a senso unico!
+                if (revDist > fwdDist * 2.1 + 220) {
+                    orientations = [oriFwd];
+                } else if (fwdDist > revDist * 2.1 + 220) {
+                    orientations = [oriRev];
+                }
+
+                return {
+                    id: cIdx,
+                    streetId,
+                    isSingle: false,
+                    centroidLat: cLat,
+                    centroidLon: cLon,
+                    orientations
+                };
+            });
+
+            return corridors;
+        }
+
+        /**
+         * Risolutore Esatto Held-Karp per Generalized TSP su Corridoi Orientati (fino a 13 strade):
+         * sceglie simultaneamente l'ordine ottimo globale delle strade e il verso di percorrenza di ciascuna.
+         */
+        function solveExactOrientedCorridorGTSP(corridors, startNode, getExitTailCost, costMatrix) {
+            const m = corridors.length;
+            if (m === 0) {
+                return { orderedLocalIndices: [], chosenOrientations: [], nodes: [], totalCost: 0 };
+            }
+            if (m === 1) {
+                let bestO = 0;
+                let bestCost = Infinity;
+                for (let o = 0; o < corridors[0].orientations.length; o++) {
+                    const ori = corridors[0].orientations[o];
+                    const c = costMatrix[startNode][ori.entry] + ori.internalCost + getExitTailCost(ori.exit);
+                    if (c < bestCost) {
+                        bestCost = c;
+                        bestO = o;
+                    }
+                }
+                return {
+                    orderedLocalIndices: [0],
+                    chosenOrientations: [bestO],
+                    nodes: [...corridors[0].orientations[bestO].nodes],
+                    totalCost: bestCost
+                };
+            }
+            if (m > 13) return null;
+
+            const numMasks = 1 << m;
+            const fullMask = numMasks - 1;
+            const stateStride = 2 * m;
+            const dp = new Float64Array(numMasks * stateStride);
+            dp.fill(Infinity);
+            const parent = new Int16Array(numMasks * stateStride);
+            parent.fill(-1);
+
+            for (let c = 0; c < m; c++) {
+                const maskOffset = (1 << c) * stateStride;
+                const oris = corridors[c].orientations;
+                for (let o = 0; o < oris.length; o++) {
+                    const ori = oris[o];
+                    dp[maskOffset + (c * 2 + o)] = costMatrix[startNode][ori.entry] + ori.internalCost;
+                }
+            }
+
+            for (let mask = 1; mask < fullMask; mask++) {
+                const baseOffset = mask * stateStride;
+                for (let c = 0; c < m; c++) {
+                    if ((mask & (1 << c)) === 0) continue;
+                    const orisC = corridors[c].orientations;
+
+                    for (let o = 0; o < orisC.length; o++) {
+                        const curState = c * 2 + o;
+                        const curCost = dp[baseOffset + curState];
+                        if (!Number.isFinite(curCost)) continue;
+                        const exitNode = orisC[o].exit;
+
+                        for (let nxt = 0; nxt < m; nxt++) {
+                            if ((mask & (1 << nxt)) !== 0) continue;
+                            const nextMaskOffset = (mask | (1 << nxt)) * stateStride;
+                            const orisNxt = corridors[nxt].orientations;
+
+                            for (let no = 0; no < orisNxt.length; no++) {
+                                const nextOri = orisNxt[no];
+                                const cand = curCost + costMatrix[exitNode][nextOri.entry] + nextOri.internalCost;
+                                const nextCell = nextMaskOffset + (nxt * 2 + no);
+                                if (cand < dp[nextCell]) {
+                                    dp[nextCell] = cand;
+                                    parent[nextCell] = curState;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            let bestFinalState = 0;
+            let bestTotal = Infinity;
+            const fullOffset = fullMask * stateStride;
+
+            for (let c = 0; c < m; c++) {
+                const orisC = corridors[c].orientations;
+                for (let o = 0; o < orisC.length; o++) {
+                    const st = c * 2 + o;
+                    const val = dp[fullOffset + st];
+                    if (!Number.isFinite(val)) continue;
+                    const total = val + getExitTailCost(orisC[o].exit);
+                    if (total < bestTotal) {
+                        bestTotal = total;
+                        bestFinalState = st;
+                    }
+                }
+            }
+
+            if (!Number.isFinite(bestTotal)) {
+                const fallbackOrder = corridors.map((_, idx) => idx);
+                const fallbackOris = corridors.map(() => 0);
+                const fallbackNodes = [];
+                fallbackOrder.forEach((cIdx) => fallbackNodes.push(...corridors[cIdx].orientations[0].nodes));
+                return {
+                    orderedLocalIndices: fallbackOrder,
+                    chosenOrientations: fallbackOris,
+                    nodes: fallbackNodes,
+                    totalCost: Infinity
+                };
+            }
+
+            const orderedLocalIndices = new Array(m);
+            const chosenOrientations = new Array(m);
+            let curMask = fullMask;
+            let curState = bestFinalState;
+
+            for (let step = m - 1; step >= 0; step--) {
+                const c = curState >> 1;
+                const o = curState & 1;
+                orderedLocalIndices[step] = c;
+                chosenOrientations[step] = o;
+                const prev = parent[curMask * stateStride + curState];
+                curMask ^= (1 << c);
+                curState = prev;
+            }
+
+            const nodes = [];
+            for (let step = 0; step < m; step++) {
+                const ori = corridors[orderedLocalIndices[step]].orientations[chosenOrientations[step]];
+                for (let k = 0; k < ori.nodes.length; k++) {
+                    nodes.push(ori.nodes[k]);
+                }
+            }
+
+            return { orderedLocalIndices, chosenOrientations, nodes, totalCost: bestTotal };
+        }
+
+        /**
+         * Programmazione Dinamica lineare O(M): data una sequenza di M corridoi stradali,
+         * calcola l'orientamento ottimale globale (tra tutte le 2^M combinazioni) in frazioni di millisecondo.
+         */
+        function optimizeCorridorDirectionsDP(corridorOrder, corridors, startNode, getExitTailCost, costMatrix) {
+            const m = corridorOrder.length;
+            if (m === 0) {
+                return { chosenOrientations: [], totalCost: 0 };
+            }
+
+            const backPtr = new Int8Array(m * 2);
+            backPtr.fill(0);
+            let prevCost0 = Infinity;
+            let prevCost1 = Infinity;
+
+            const firstOris = corridors[corridorOrder[0]].orientations;
+            prevCost0 = costMatrix[startNode][firstOris[0].entry] + firstOris[0].internalCost;
+            if (firstOris.length > 1) {
+                prevCost1 = costMatrix[startNode][firstOris[1].entry] + firstOris[1].internalCost;
+            }
+
+            for (let step = 1; step < m; step++) {
+                const prevOris = corridors[corridorOrder[step - 1]].orientations;
+                const curOris = corridors[corridorOrder[step]].orientations;
+                let nextCost0 = Infinity;
+                let nextCost1 = Infinity;
+
+                for (let co = 0; co < curOris.length; co++) {
+                    const curOri = curOris[co];
+                    let bestFrom = 0;
+                    let bestVal = prevCost0 + costMatrix[prevOris[0].exit][curOri.entry] + curOri.internalCost;
+
+                    if (prevOris.length > 1 && Number.isFinite(prevCost1)) {
+                        const cand1 = prevCost1 + costMatrix[prevOris[1].exit][curOri.entry] + curOri.internalCost;
+                        if (cand1 < bestVal) {
+                            bestVal = cand1;
+                            bestFrom = 1;
+                        }
+                    }
+
+                    backPtr[step * 2 + co] = bestFrom;
+                    if (co === 0) nextCost0 = bestVal;
+                    else nextCost1 = bestVal;
+                }
+
+                prevCost0 = nextCost0;
+                prevCost1 = nextCost1;
+            }
+
+            const lastOris = corridors[corridorOrder[m - 1]].orientations;
+            let bestLastO = 0;
+            let bestTotal = prevCost0 + getExitTailCost(lastOris[0].exit);
+            if (lastOris.length > 1 && Number.isFinite(prevCost1)) {
+                const candLast1 = prevCost1 + getExitTailCost(lastOris[1].exit);
+                if (candLast1 < bestTotal) {
+                    bestTotal = candLast1;
+                    bestLastO = 1;
+                }
+            }
+
+            const chosenOrientations = new Array(m);
+            let curO = bestLastO;
+            for (let step = m - 1; step >= 0; step--) {
+                chosenOrientations[step] = curO;
+                curO = backPtr[step * 2 + curO];
+            }
+
+            return { chosenOrientations, totalCost: bestTotal };
+        }
+
+        function expandCorridorOrderToNodes(corridorOrder, chosenOrientations, corridors) {
+            const nodes = [];
+            for (let step = 0; step < corridorOrder.length; step++) {
+                const corr = corridors[corridorOrder[step]];
+                const ori = corr.orientations[chosenOrientations[step]] || corr.orientations[0];
+                for (let k = 0; k < ori.nodes.length; k++) {
+                    nodes.push(ori.nodes[k]);
+                }
+            }
+            return nodes;
+        }
+
+        /**
+         * Ricerca locale direttamente sui corridoi stradali (2-opt + Or-opt 1..3),
+         * ricalcolando ad ogni mossa il verso ottimale di ogni strada con optimizeCorridorDirectionsDP.
+         */
+        function localSearchStreetCorridors(initialOrder, corridors, startNode, getExitTailCost, costMatrix) {
+            let bestOrder = [...initialOrder];
+            const m = bestOrder.length;
+            let bestEval = optimizeCorridorDirectionsDP(bestOrder, corridors, startNode, getExitTailCost, costMatrix);
+            if (m <= 2) {
+                return { order: bestOrder, chosenOrientations: bestEval.chosenOrientations, totalCost: bestEval.totalCost };
+            }
+
+            let improved = true;
+            let guard = 0;
+
+            while (improved && guard < 70) {
+                improved = false;
+                guard++;
+
+                // 1. 2-opt sui corridoi (l'inversione dei versi stradali viene ricalcolata in modo esatto dal DP)
+                for (let i = 0; i < m - 1; i++) {
+                    for (let k = i + 1; k < m; k++) {
+                        const candidate = [
+                            ...bestOrder.slice(0, i),
+                            ...bestOrder.slice(i, k + 1).reverse(),
+                            ...bestOrder.slice(k + 1)
+                        ];
+                        const candEval = optimizeCorridorDirectionsDP(candidate, corridors, startNode, getExitTailCost, costMatrix);
+                        if (candEval.totalCost + 0.25 < bestEval.totalCost) {
+                            bestOrder = candidate;
+                            bestEval = candEval;
+                            improved = true;
+                            break;
+                        }
+                    }
+                    if (improved) break;
+                }
+                if (improved) continue;
+
+                // 2. Or-opt sui corridoi (spostamento di 1, 2 o 3 strade consecutive)
+                for (const bs of [1, 2, 3]) {
+                    if (m <= bs) continue;
+                    for (let i = 0; i <= m - bs; i++) {
+                        const block = bestOrder.slice(i, i + bs);
+                        const rem = [...bestOrder.slice(0, i), ...bestOrder.slice(i + bs)];
+                        let bestTarget = -1;
+                        let bestCandEval = bestEval;
+
+                        for (let t = 0; t <= rem.length; t++) {
+                            if (t === i) continue;
+                            const candidate = [...rem.slice(0, t), ...block, ...rem.slice(t)];
+                            const candEval = optimizeCorridorDirectionsDP(candidate, corridors, startNode, getExitTailCost, costMatrix);
+                            if (candEval.totalCost + 0.25 < bestCandEval.totalCost) {
+                                bestCandEval = candEval;
+                                bestTarget = t;
+                            }
+                        }
+
+                        if (bestTarget !== -1) {
+                            bestOrder = [...rem.slice(0, bestTarget), ...block, ...rem.slice(bestTarget)];
+                            bestEval = bestCandEval;
+                            improved = true;
+                            break;
+                        }
+                    }
+                    if (improved) break;
+                }
+            }
+
+            return { order: bestOrder, chosenOrientations: bestEval.chosenOrientations, totalCost: bestEval.totalCost };
+        }
+
+        /**
+         * Per turni ampi (~40+ pacchi su >13 strade), applica finestre scorrevoli sovrapposte da 11 strade
+         * risolvendo ciascuna finestra al 100% dell'ottimo matematico con Held-Karp orientato.
+         */
+        function slidingWindowExactCorridorDP(initialOrder, initialOrientations, corridors, startNode, getExitTailCost, costMatrix) {
+            const m = initialOrder.length;
+            if (m <= 13) {
+                const exact = solveExactOrientedCorridorGTSP(corridors, startNode, getExitTailCost, costMatrix);
+                return {
+                    order: exact.orderedLocalIndices,
+                    chosenOrientations: exact.chosenOrientations,
+                    totalCost: exact.totalCost
+                };
+            }
+
+            let curOrder = [...initialOrder];
+            let curOris = [...initialOrientations];
+            const W = 11;
+            const windowStarts = [];
+            for (let s = 0; s + W <= m; s += 5) {
+                windowStarts.push(s);
+            }
+            if (windowStarts[windowStarts.length - 1] !== m - W) {
+                windowStarts.push(m - W);
+            }
+
+            for (const wStart of windowStarts) {
+                const wEnd = wStart + W - 1;
+                const subCorrIds = curOrder.slice(wStart, wEnd + 1);
+                const subCorridors = subCorrIds.map(id => corridors[id]);
+
+                const entryFromNode = wStart === 0
+                    ? startNode
+                    : corridors[curOrder[wStart - 1]].orientations[curOris[wStart - 1]].exit;
+
+                const windowTailFn = (wEnd === m - 1)
+                    ? getExitTailCost
+                    : (exitNode) => {
+                        const nextCorr = corridors[curOrder[wEnd + 1]];
+                        let minLink = Infinity;
+                        for (let o = 0; o < nextCorr.orientations.length; o++) {
+                            const c = costMatrix[exitNode][nextCorr.orientations[o].entry];
+                            if (c < minLink) minLink = c;
+                        }
+                        return minLink;
+                    };
+
+                const subSolved = solveExactOrientedCorridorGTSP(subCorridors, entryFromNode, windowTailFn, costMatrix);
+                if (subSolved) {
+                    const newSubIds = subSolved.orderedLocalIndices.map(loc => subCorrIds[loc]);
+                    curOrder = [
+                        ...curOrder.slice(0, wStart),
+                        ...newSubIds,
+                        ...curOrder.slice(wEnd + 1)
+                    ];
+                    const reEval = optimizeCorridorDirectionsDP(curOrder, corridors, startNode, getExitTailCost, costMatrix);
+                    curOris = reEval.chosenOrientations;
+                }
+            }
+
+            const finalEval = optimizeCorridorDirectionsDP(curOrder, corridors, startNode, getExitTailCost, costMatrix);
+            return {
+                order: curOrder,
+                chosenOrientations: finalEval.chosenOrientations,
+                totalCost: finalEval.totalCost
+            };
+        }
+
+        /**
+         * Costruttori iniziali Street-First diversificati per turni medi da ~40 pacchi:
+         * - Cheapest Oriented Insertion (evita incroci del percorso)
+         * - Macro-Sector Sweep (raggruppa i quartieri in settori ~450m e li spazza in anello orario/antiorario)
+         * - Spine Out-and-Back (andata su un lato dell'asse principale e ritorno sull'altro)
+         * - Nearest Oriented Corridor (con eventuale rumore controllato)
+         */
+        function buildInitialCorridorOrder(corridors, startNode, getExitTailCost, allNodes, costMatrix, mode, noiseFactor, nextRand) {
+            const m = corridors.length;
+            if (m <= 1) return corridors.map((_, i) => i);
+            const refLat = allNodes[startNode].lat;
+            const refLon = allNodes[startNode].lon;
+
+            if (mode === "cheapest_insertion") {
+                let farthest = 0;
+                let maxCost = -1;
+                for (let c = 0; c < m; c++) {
+                    const cCost = costMatrix[startNode][corridors[c].orientations[0].entry];
+                    if (cCost > maxCost) {
+                        maxCost = cCost;
+                        farthest = c;
+                    }
+                }
+
+                const tour = [farthest];
+                const inTour = new Uint8Array(m);
+                inTour[farthest] = 1;
+
+                while (tour.length < m) {
+                    let bestCand = -1;
+                    let bestPos = 0;
+                    let bestDelta = Infinity;
+
+                    for (let c = 0; c < m; c++) {
+                        if (inTour[c]) continue;
+                        const orisC = corridors[c].orientations;
+
+                        for (let pos = 0; pos <= tour.length; pos++) {
+                            const prevExit = pos === 0
+                                ? startNode
+                                : corridors[tour[pos - 1]].orientations[0].exit;
+                            const nextEntry = pos < tour.length
+                                ? corridors[tour[pos]].orientations[0].entry
+                                : -1;
+                            const baseLink = nextEntry !== -1
+                                ? costMatrix[prevExit][nextEntry]
+                                : getExitTailCost(prevExit);
+
+                            for (let o = 0; o < orisC.length; o++) {
+                                const ori = orisC[o];
+                                const afterCost = nextEntry !== -1
+                                    ? costMatrix[ori.exit][nextEntry]
+                                    : getExitTailCost(ori.exit);
+                                const delta = costMatrix[prevExit][ori.entry] + ori.internalCost + afterCost - baseLink;
+                                if (delta < bestDelta) {
+                                    bestDelta = delta;
+                                    bestCand = c;
+                                    bestPos = pos;
+                                }
+                            }
+                        }
+                    }
+
+                    tour.splice(bestPos, 0, bestCand);
+                    inTour[bestCand] = 1;
+                }
+                return tour;
+            }
+
+            if (mode === "sector_sweep_cw" || mode === "sector_sweep_ccw") {
+                // Decomposizione gerarchica Macro-Settori (~450m) -> Strade del settore
+                const assigned = new Uint8Array(m);
+                const sectors = [];
+                for (let i = 0; i < m; i++) {
+                    if (assigned[i]) continue;
+                    const sec = [i];
+                    assigned[i] = 1;
+                    for (let j = i + 1; j < m; j++) {
+                        if (assigned[j]) continue;
+                        const dM = haversineKm(
+                            corridors[i].centroidLat,
+                            corridors[i].centroidLon,
+                            corridors[j].centroidLat,
+                            corridors[j].centroidLon
+                        ) * 1000;
+                        if (dM <= 450) {
+                            sec.push(j);
+                            assigned[j] = 1;
+                        }
+                    }
+                    const sLat = sec.reduce((acc, id) => acc + corridors[id].centroidLat, 0) / sec.length;
+                    const sLon = sec.reduce((acc, id) => acc + corridors[id].centroidLon, 0) / sec.length;
+                    sectors.push({ members: sec, lat: sLat, lon: sLon });
+                }
+
+                const centerLat = sectors.reduce((acc, s) => acc + s.lat, 0) / sectors.length;
+                const centerLon = sectors.reduce((acc, s) => acc + s.lon, 0) / sectors.length;
+                const startAngle = Math.atan2(refLat - centerLat, refLon - centerLon);
+
+                sectors.sort((a, b) => {
+                    let angA = Math.atan2(a.lat - centerLat, a.lon - centerLon) - startAngle;
+                    let angB = Math.atan2(b.lat - centerLat, b.lon - centerLon) - startAngle;
+                    while (angA < 0) angA += Math.PI * 2;
+                    while (angB < 0) angB += Math.PI * 2;
+                    return mode === "sector_sweep_cw" ? angA - angB : angB - angA;
+                });
+
+                const ordered = [];
+                let curNode = startNode;
+                for (const sec of sectors) {
+                    const rem = new Set(sec.members);
+                    while (rem.size > 0) {
+                        let bestId = -1;
+                        let bestExit = curNode;
+                        let bestVal = Infinity;
+                        for (const id of rem) {
+                            for (const ori of corridors[id].orientations) {
+                                const v = costMatrix[curNode][ori.entry] + ori.internalCost * 0.4;
+                                if (v < bestVal) {
+                                    bestVal = v;
+                                    bestId = id;
+                                    bestExit = ori.exit;
+                                }
+                            }
+                        }
+                        ordered.push(bestId);
+                        rem.delete(bestId);
+                        curNode = bestExit;
+                    }
+                }
+                return ordered;
+            }
+
+            if (mode === "corridor_spine") {
+                let farIdx = 0;
+                let maxD = -1;
+                for (let i = 0; i < m; i++) {
+                    const d = haversineKm(refLat, refLon, corridors[i].centroidLat, corridors[i].centroidLon);
+                    if (d > maxD) {
+                        maxD = d;
+                        farIdx = i;
+                    }
+                }
+                const ax = corridors[farIdx].centroidLon - refLon;
+                const ay = corridors[farIdx].centroidLat - refLat;
+                const sideA = [];
+                const sideB = [];
+                for (let i = 0; i < m; i++) {
+                    const vx = corridors[i].centroidLon - refLon;
+                    const vy = corridors[i].centroidLat - refLat;
+                    const proj = vx * ax + vy * ay;
+                    const cross = ax * vy - ay * vx;
+                    if (cross >= 0) sideA.push({ i, proj });
+                    else sideB.push({ i, proj });
+                }
+                sideA.sort((a, b) => a.proj - b.proj);
+                sideB.sort((a, b) => b.proj - a.proj);
+                return [...sideA.map(x => x.i), ...sideB.map(x => x.i)];
+            }
+
+            // Default: Nearest Oriented Corridor (con eventuale rumore stocastico)
+            const unvisited = new Set(corridors.map((_, i) => i));
+            const result = [];
+            let curNode = startNode;
+
+            if (mode === "random_seed" && unvisited.size > 0) {
+                const pick = Math.floor(nextRand() * m);
+                result.push(pick);
+                unvisited.delete(pick);
+                curNode = corridors[pick].orientations[0].exit;
+            }
+
+            while (unvisited.size > 0) {
+                let bestId = -1;
+                let bestExit = curNode;
+                let bestScore = Infinity;
+
+                for (const id of unvisited) {
+                    const jitter = noiseFactor > 0 ? (1 + (nextRand() - 0.5) * noiseFactor) : 1;
+                    for (const ori of corridors[id].orientations) {
+                        const score = (costMatrix[curNode][ori.entry] + ori.internalCost * 0.35) * jitter;
+                        if (score < bestScore) {
+                            bestScore = score;
+                            bestId = id;
+                            bestExit = ori.exit;
+                        }
+                    }
+                }
+
+                result.push(bestId);
+                unvisited.delete(bestId);
+                curNode = bestExit;
+            }
+
+            return result;
+        }
+
+        function ruinAndRecreateCorridors(order, corridors, startNode, getExitTailCost, costMatrix, nextRand) {
+            const m = order.length;
+            if (m < 6) return [...order];
+
+            const seedPos = Math.floor(nextRand() * m);
+            const seedCorr = corridors[order[seedPos]];
+            const removeCount = Math.min(m - 2, 4 + Math.floor(nextRand() * 3));
+
+            const ranked = order.map((cId) => ({
+                cId,
+                dist: haversineKm(seedCorr.centroidLat, seedCorr.centroidLon, corridors[cId].centroidLat, corridors[cId].centroidLon)
+            }));
+            ranked.sort((a, b) => a.dist - b.dist);
+
+            const removedSet = new Set(ranked.slice(0, removeCount).map(r => r.cId));
+            const partial = order.filter(cId => !removedSet.has(cId));
+            const removed = Array.from(removedSet);
+
+            // Reinserimento greedy con valutazione esatta dell'orientamento
+            while (removed.length > 0) {
+                let bestRIdx = 0;
+                let bestPos = 0;
+                let bestCost = Infinity;
+
+                for (let r = 0; r < removed.length; r++) {
+                    const cId = removed[r];
+                    for (let pos = 0; pos <= partial.length; pos++) {
+                        const candOrder = [...partial.slice(0, pos), cId, ...partial.slice(pos)];
+                        const ev = optimizeCorridorDirectionsDP(candOrder, corridors, startNode, getExitTailCost, costMatrix);
+                        if (ev.totalCost < bestCost) {
+                            bestCost = ev.totalCost;
+                            bestRIdx = r;
+                            bestPos = pos;
+                        }
+                    }
+                }
+
+                const [chosen] = removed.splice(bestRIdx, 1);
+                partial.splice(bestPos, 0, chosen);
+            }
+
+            return partial;
+        }
+
+        /**
+         * Risolve una fascia (Prioritaria o Ordinaria) con il modello Street-First,
+         * restituendo le migliori sequenze di nodi già espanse dai corridoi orientati.
+         */
+        function solveStreetFirstZone(corridors, startNode, getExitTailCost, allNodes, costMatrix, nextRand, maxSolutions = 5) {
+            const m = corridors.length;
+            if (m === 0) return [[]];
+
+            const solutionsMap = new Map();
+            const registerCorrSol = (order, oris, totalCost) => {
+                const nodes = expandCorridorOrderToNodes(order, oris, corridors);
+                const sig = nodes.join(",");
+                const existing = solutionsMap.get(sig);
+                if (!existing || totalCost < existing.totalCost) {
+                    solutionsMap.set(sig, { order, oris, nodes, totalCost });
+                }
+            };
+
+            // Caso A: fino a 13 corridoi stradali -> Ottimo globale matematico garantito al 100%
+            if (m <= 13) {
+                const exact = solveExactOrientedCorridorGTSP(corridors, startNode, getExitTailCost, costMatrix);
+                if (exact) {
+                    registerCorrSol(exact.orderedLocalIndices, exact.chosenOrientations, exact.totalCost);
+                }
+                // Aggiunge partenze alternative Street-First (oraria/antioraria/spina) per alimentare le Top 3 varianti
+                for (const altMode of ["sector_sweep_cw", "sector_sweep_ccw", "corridor_spine", "cheapest_insertion"]) {
+                    const initOrd = buildInitialCorridorOrder(corridors, startNode, getExitTailCost, allNodes, costMatrix, altMode, 0, nextRand);
+                    const loc = localSearchStreetCorridors(initOrd, corridors, startNode, getExitTailCost, costMatrix);
+                    registerCorrSol(loc.order, loc.chosenOrientations, loc.totalCost);
+                }
+            } else {
+                // Caso B: > 13 corridoi stradali (es. 40+ pacchi su molte vie) -> Multi-Start + Sliding Exact GTSP + ILS
+                const modes = [
+                    { mode: "cheapest_insertion", noise: 0 },
+                    { mode: "sector_sweep_cw", noise: 0 },
+                    { mode: "sector_sweep_ccw", noise: 0 },
+                    { mode: "corridor_spine", noise: 0 },
+                    { mode: "nearest", noise: 0 }
+                ];
+                for (let t = 0; t < 20; t++) {
+                    modes.push({
+                        mode: t % 2 === 0 ? "nearest" : "random_seed",
+                        noise: 0.08 + (t % 6) * 0.05
+                    });
+                }
+
+                for (const cfg of modes) {
+                    const initOrd = buildInitialCorridorOrder(corridors, startNode, getExitTailCost, allNodes, costMatrix, cfg.mode, cfg.noise, nextRand);
+                    const loc = localSearchStreetCorridors(initOrd, corridors, startNode, getExitTailCost, costMatrix);
+                    registerCorrSol(loc.order, loc.chosenOrientations, loc.totalCost);
+                }
+
+                // Raffinamento con finestre scorrevoli esatte da 11 strade + Ruin & Recreate sui corridoi migliori
+                const topSeeds = Array.from(solutionsMap.values())
+                    .sort((a, b) => a.totalCost - b.totalCost)
+                    .slice(0, 4);
+
+                for (const seedSol of topSeeds) {
+                    const winRefined = slidingWindowExactCorridorDP(
+                        seedSol.order,
+                        seedSol.oris,
+                        corridors,
+                        startNode,
+                        getExitTailCost,
+                        costMatrix
+                    );
+                    const postLoc = localSearchStreetCorridors(winRefined.order, corridors, startNode, getExitTailCost, costMatrix);
+                    registerCorrSol(postLoc.order, postLoc.chosenOrientations, postLoc.totalCost);
+
+                    let curBest = postLoc;
+                    for (let ils = 0; ils < 12; ils++) {
+                        const perturbedOrder = ruinAndRecreateCorridors(curBest.order, corridors, startNode, getExitTailCost, costMatrix, nextRand);
+                        const ilsLoc = localSearchStreetCorridors(perturbedOrder, corridors, startNode, getExitTailCost, costMatrix);
+                        registerCorrSol(ilsLoc.order, ilsLoc.chosenOrientations, ilsLoc.totalCost);
+                        if (ilsLoc.totalCost < curBest.totalCost) {
+                            curBest = ilsLoc;
+                        }
+                    }
+
+                    const finalWin = slidingWindowExactCorridorDP(
+                        curBest.order,
+                        curBest.chosenOrientations,
+                        corridors,
+                        startNode,
+                        getExitTailCost,
+                        costMatrix
+                    );
+                    registerCorrSol(finalWin.order, finalWin.chosenOrientations, finalWin.totalCost);
+                }
+            }
+
+            return Array.from(solutionsMap.values())
+                .sort((a, b) => a.totalCost - b.totalCost)
+                .slice(0, maxSolutions)
+                .map(s => s.nodes);
         }
 
         function localSearchOptimizeRoute(initialRoute, allNodes, costMatrix, priorityBoundary) {
@@ -4883,7 +6097,7 @@
             let improved = true;
             let guard = 0;
 
-            while (improved && guard < 160) {
+            while (improved && guard < 120) {
                 improved = false;
                 guard++;
                 rebuildPrefixes();
@@ -4977,19 +6191,211 @@
         }
 
         /**
-         * Ripara automaticamente le sequenze in cui il percorso passa davanti a una fermata ignorandola
-         * (inserendola nel primo passaggio utile) e riordina in modo monotono eventuali blocchi sulla stessa via
+         * Trova l'intero blocco contiguo della stessa via attorno alla posizione posW (entro la stessa zona),
+         * così da spostare l'intera strada insieme senza spezzarla.
          */
-        function repairPassByAndStreetOrder(initialRoute, costMatrix, parsedNodes, passByList, priorityBoundary) {
+        function getContiguousSameStreetSpan(route, posW, zoneStart, zoneEnd, parsedNodes) {
+            const stId = parsedNodes[route[posW]]?.streetId ?? -1;
+            if (stId < 0) return { start: posW, end: posW };
+            let s = posW;
+            let e = posW;
+            while (s > zoneStart && (parsedNodes[route[s - 1]]?.streetId ?? -1) === stId) s--;
+            while (e < zoneEnd && (parsedNodes[route[e + 1]]?.streetId ?? -1) === stId) e++;
+            return { start: s, end: e };
+        }
+
+        /**
+         * Rifinitura micro-livello guidata dalla funzione obiettivo completa Street-First:
+         * - sposta interi corridoi stradali (anche di 4-8+ fermate, nei due versi)
+         * - assorbe traverse corte (1-3 fermate) lungo un viale quando la deviazione è <= 350m
+         * - applica 2-opt locale corto con pre-filtro rapido O(1) per massime prestazioni su 40+ pacchi.
+         */
+        function fullObjectiveRelocatePass(
+            initialRoute,
+            costMatrix,
+            parsedNodes,
+            passByList,
+            priorityBoundary,
+            distanceMatrix = null,
+            scratch = null
+        ) {
+            let bestRoute = [...initialRoute];
+            const L = bestRoute.length;
+            if (L <= 4) return bestRoute;
+
+            const zones = [];
+            if (priorityBoundary >= 2) zones.push({ start: 1, end: priorityBoundary });
+            if (L - 2 - priorityBoundary >= 2) zones.push({ start: priorityBoundary + 1, end: L - 2 });
+
+            let bestCost = computeTotalRouteCost(bestRoute, costMatrix, parsedNodes, passByList, priorityBoundary, distanceMatrix, scratch);
+            let improved = true;
+            let passes = 0;
+
+            while (improved && passes < 7) {
+                improved = false;
+                passes++;
+
+                for (const zone of zones) {
+                    const zoneLen = zone.end - zone.start + 1;
+
+                    // 1. Spostamento di interi blocchi stradali (qualsiasi lunghezza >= 2, sia dritti che invertiti)
+                    let pos = zone.start;
+                    while (pos <= zone.end) {
+                        const span = getContiguousSameStreetSpan(bestRoute, pos, zone.start, zone.end, parsedNodes);
+                        const spanLen = span.end - span.start + 1;
+                        if (spanLen >= 2 && spanLen < zoneLen) {
+                            const origBlock = bestRoute.slice(span.start, span.end + 1);
+                            const revBlock = [...origBlock].reverse();
+                            const rem = [...bestRoute.slice(0, span.start), ...bestRoute.slice(span.end + 1)];
+                            const prevNode = bestRoute[span.start - 1];
+                            const nextNode = bestRoute[span.end + 1];
+                            const removeGain =
+                                costMatrix[prevNode][nextNode] -
+                                (costMatrix[prevNode][origBlock[0]] + costMatrix[origBlock[spanLen - 1]][nextNode]);
+
+                            let bestCandRoute = null;
+                            let localBest = bestCost;
+
+                            for (let t = zone.start; t <= zone.end - spanLen + 1; t++) {
+                                const u = rem[t - 1];
+                                const v = rem[t];
+                                for (let dir = 0; dir < 2; dir++) {
+                                    if (t === span.start && dir === 0) continue;
+                                    const blk = dir === 0 ? origBlock : revBlock;
+                                    const edgeDelta =
+                                        removeGain +
+                                        costMatrix[u][blk[0]] +
+                                        costMatrix[blk[spanLen - 1]][v] -
+                                        costMatrix[u][v];
+                                    if (edgeDelta > 260) continue;
+
+                                    const candidate = [...rem.slice(0, t), ...blk, ...rem.slice(t)];
+                                    const candCost = computeTotalRouteCost(candidate, costMatrix, parsedNodes, passByList, priorityBoundary, distanceMatrix, scratch);
+                                    if (candCost + 0.5 < localBest) {
+                                        localBest = candCost;
+                                        bestCandRoute = candidate;
+                                    }
+                                }
+                            }
+
+                            if (bestCandRoute) {
+                                bestRoute = bestCandRoute;
+                                bestCost = localBest;
+                                improved = true;
+                                break;
+                            }
+                        }
+                        pos = span.end + 1;
+                    }
+                    if (improved) break;
+
+                    // 2. Spostamento blocchi da 1, 2, 3 fermate (assorbimento intelligente traverse corte + pass-by)
+                    for (const blockSize of [1, 2, 3]) {
+                        if (zoneLen <= blockSize) continue;
+
+                        for (let i = zone.start; i <= zone.end - blockSize + 1; i++) {
+                            const block = bestRoute.slice(i, i + blockSize);
+                            const prevNode = bestRoute[i - 1];
+                            const nextNode = bestRoute[i + blockSize];
+                            const removeGain =
+                                costMatrix[prevNode][nextNode] -
+                                (costMatrix[prevNode][block[0]] + costMatrix[block[blockSize - 1]][nextNode]);
+                            const remaining = [
+                                ...bestRoute.slice(0, i),
+                                ...bestRoute.slice(i + blockSize)
+                            ];
+                            const maxInsertPos = zone.end - blockSize + 1;
+                            let bestTarget = -1;
+                            let localBestCost = bestCost;
+
+                            for (let target = zone.start; target <= maxInsertPos; target++) {
+                                if (target === i) continue;
+                                const u = remaining[target - 1];
+                                const v = remaining[target];
+                                const edgeDelta =
+                                    removeGain +
+                                    costMatrix[u][block[0]] +
+                                    costMatrix[block[blockSize - 1]][v] -
+                                    costMatrix[u][v];
+                                if (edgeDelta > 240) continue;
+
+                                const candidate = [
+                                    ...remaining.slice(0, target),
+                                    ...block,
+                                    ...remaining.slice(target)
+                                ];
+                                const candCost = computeTotalRouteCost(candidate, costMatrix, parsedNodes, passByList, priorityBoundary, distanceMatrix, scratch);
+                                if (candCost + 0.5 < localBestCost) {
+                                    localBestCost = candCost;
+                                    bestTarget = target;
+                                }
+                            }
+
+                            if (bestTarget !== -1) {
+                                bestRoute = [
+                                    ...remaining.slice(0, bestTarget),
+                                    ...block,
+                                    ...remaining.slice(bestTarget)
+                                ];
+                                bestCost = localBestCost;
+                                improved = true;
+                                break;
+                            }
+                        }
+                        if (improved) break;
+                    }
+                    if (improved) break;
+
+                    // 3. 2-opt selettivo su finestre fino a 6 fermate
+                    for (let i = zone.start; i < zone.end; i++) {
+                        const maxK = Math.min(zone.end, i + 5);
+                        for (let k = i + 1; k <= maxK; k++) {
+                            const reversedSeg = bestRoute.slice(i, k + 1).reverse();
+                            const candidate = [
+                                ...bestRoute.slice(0, i),
+                                ...reversedSeg,
+                                ...bestRoute.slice(k + 1)
+                            ];
+                            const candCost = computeTotalRouteCost(candidate, costMatrix, parsedNodes, passByList, priorityBoundary, distanceMatrix, scratch);
+                            if (candCost + 0.5 < bestCost) {
+                                bestRoute = candidate;
+                                bestCost = candCost;
+                                improved = true;
+                                break;
+                            }
+                        }
+                        if (improved) break;
+                    }
+                    if (improved) break;
+                }
+            }
+
+            return bestRoute;
+        }
+
+        /**
+         * Ripara le tratte che passano davanti a una consegna o a una via non ancora effettuata:
+         * prova prima ad anticipare l'intero corridoio stradale di quella via al primo passaggio utile,
+         * e riordina linearmente eventuali blocchi consecutivi sulla stessa strada.
+         */
+        function repairPassByAndStreetOrder(
+            initialRoute,
+            costMatrix,
+            parsedNodes,
+            passByList,
+            priorityBoundary,
+            distanceMatrix = null,
+            scratch = null
+        ) {
             let bestRoute = [...initialRoute];
             const L = bestRoute.length;
             if (L <= 3) return bestRoute;
 
-            let bestCost = computeTotalRouteCost(bestRoute, costMatrix, parsedNodes, passByList, priorityBoundary);
+            let bestCost = computeTotalRouteCost(bestRoute, costMatrix, parsedNodes, passByList, priorityBoundary, distanceMatrix, scratch);
             let improved = true;
             let guard = 0;
 
-            while (improved && guard < 25) {
+            while (improved && guard < 28) {
                 improved = false;
                 guard++;
 
@@ -5004,16 +6410,43 @@
                         const posW = bestRoute.indexOf(info.node);
                         if (posW <= i + 1) continue;
 
-                        const legalInThisZone = info.priority
+                        const isPrioZone = info.priority;
+                        const legalInThisZone = isPrioZone
                             ? (i < priorityBoundary && posW <= priorityBoundary)
                             : (i >= priorityBoundary && posW > priorityBoundary);
                         if (!legalInThisZone) continue;
 
+                        const zStart = isPrioZone ? 1 : priorityBoundary + 1;
+                        const zEnd = isPrioZone ? priorityBoundary : L - 2;
+                        const span = getContiguousSameStreetSpan(bestRoute, posW, zStart, zEnd, parsedNodes);
+
+                        // Prova prima a spostare l'intero corridoio della via intercettata (senza spezzarla!)
+                        if (span.start > i + 1 && span.end > span.start) {
+                            const streetBlock = bestRoute.slice(span.start, span.end + 1);
+                            const rem = [...bestRoute.slice(0, span.start), ...bestRoute.slice(span.end + 1)];
+                            for (const blk of [streetBlock, [...streetBlock].reverse()]) {
+                                const candBlockMove = [
+                                    ...rem.slice(0, i + 1),
+                                    ...blk,
+                                    ...rem.slice(i + 1)
+                                ];
+                                const cCost = computeTotalRouteCost(candBlockMove, costMatrix, parsedNodes, passByList, priorityBoundary, distanceMatrix, scratch);
+                                if (cCost + 0.5 < bestCost) {
+                                    bestRoute = candBlockMove;
+                                    bestCost = cCost;
+                                    improved = true;
+                                    break;
+                                }
+                            }
+                            if (improved) break;
+                        }
+
+                        // Altrimenti sposta la singola fermata (se è una via singola o non viola la coesione)
                         const candidate = [...bestRoute];
                         candidate.splice(posW, 1);
                         candidate.splice(i + 1, 0, info.node);
 
-                        const candCost = computeTotalRouteCost(candidate, costMatrix, parsedNodes, passByList, priorityBoundary);
+                        const candCost = computeTotalRouteCost(candidate, costMatrix, parsedNodes, passByList, priorityBoundary, distanceMatrix, scratch);
                         if (candCost + 0.5 < bestCost) {
                             bestRoute = candidate;
                             bestCost = candCost;
@@ -5025,7 +6458,7 @@
                 }
             }
 
-            // Controlla eventuali blocchi consecutivi sulla stessa strada ordinandoli in modo lineare (crescente o decrescente)
+            // Garantisce monotonicità lineare sui blocchi consecutivi della stessa strada
             const zones = [];
             if (priorityBoundary >= 3) zones.push({ start: 1, end: priorityBoundary });
             if (L - 2 - priorityBoundary >= 3) zones.push({ start: priorityBoundary + 1, end: L - 2 });
@@ -5033,15 +6466,15 @@
             for (const zone of zones) {
                 let s = zone.start;
                 while (s <= zone.end) {
-                    const st = parsedNodes[bestRoute[s]]?.street;
-                    if (!st || parsedNodes[bestRoute[s]]?.civicNum === null) {
+                    const stId = parsedNodes[bestRoute[s]]?.streetId ?? -1;
+                    if (stId < 0 || parsedNodes[bestRoute[s]]?.civicNum === null) {
                         s++;
                         continue;
                     }
                     let e = s;
                     while (
                         e + 1 <= zone.end &&
-                        parsedNodes[bestRoute[e + 1]]?.street === st &&
+                        (parsedNodes[bestRoute[e + 1]]?.streetId ?? -1) === stId &&
                         parsedNodes[bestRoute[e + 1]]?.civicNum !== null
                     ) {
                         e++;
@@ -5056,7 +6489,7 @@
                                 ...orderedSeg,
                                 ...bestRoute.slice(e + 1)
                             ];
-                            const candCost = computeTotalRouteCost(candidate, costMatrix, parsedNodes, passByList, priorityBoundary);
+                            const candCost = computeTotalRouteCost(candidate, costMatrix, parsedNodes, passByList, priorityBoundary, distanceMatrix, scratch);
                             if (candCost + 0.5 < bestCost) {
                                 bestRoute = candidate;
                                 bestCost = candCost;
@@ -5071,77 +6504,26 @@
         }
 
         /**
-         * Rifinitura a spostamento singolo valutata con la funzione obiettivo completa
-         * (include penalità pass-by e anti-inversione sulla stessa strada)
+         * Passo mirato di 3-opt orientato (senza inversioni di segmento, 100% compatibile coi sensi unici)
          */
-        function fullObjectiveRelocatePass(initialRoute, costMatrix, parsedNodes, passByList, priorityBoundary) {
-            let bestRoute = [...initialRoute];
-            const L = bestRoute.length;
-            if (L <= 4) return bestRoute;
-
-            const zones = [];
-            if (priorityBoundary >= 2) zones.push({ start: 1, end: priorityBoundary });
-            if (L - 2 - priorityBoundary >= 2) zones.push({ start: priorityBoundary + 1, end: L - 2 });
-
-            let bestCost = computeTotalRouteCost(bestRoute, costMatrix, parsedNodes, passByList, priorityBoundary);
-            let improved = true;
-            let passes = 0;
-
-            while (improved && passes < 6) {
-                improved = false;
-                passes++;
-
-                for (const zone of zones) {
-                    for (let i = zone.start; i <= zone.end; i++) {
-                        const node = bestRoute[i];
-                        let bestTarget = -1;
-                        let localBestCost = bestCost;
-
-                        for (let target = zone.start; target <= zone.end; target++) {
-                            if (target === i) continue;
-                            const candidate = [...bestRoute];
-                            candidate.splice(i, 1);
-                            candidate.splice(target, 0, node);
-                            const candCost = computeTotalRouteCost(candidate, costMatrix, parsedNodes, passByList, priorityBoundary);
-                            if (candCost + 0.5 < localBestCost) {
-                                localBestCost = candCost;
-                                bestTarget = target;
-                            }
-                        }
-
-                        if (bestTarget !== -1) {
-                            bestRoute.splice(i, 1);
-                            bestRoute.splice(bestTarget, 0, node);
-                            bestCost = localBestCost;
-                            improved = true;
-                            break;
-                        }
-                    }
-                    if (improved) break;
-                }
-            }
-
-            return bestRoute;
-        }
-
-        /**
-         * Passo mirato di 3-opt orientato (senza inversioni di segmento, quindi 100% compatibile con
-         * sensi unici e viabilità reale) sulle zone di priorità e ordinarie
-         */
-        function orientedThreeOptPass(initialRoute, costMatrix, priorityBoundary, parsedNodes = null, passByList = null) {
+        function orientedThreeOptPass(
+            initialRoute,
+            costMatrix,
+            priorityBoundary,
+            parsedNodes = null,
+            passByList = null,
+            distanceMatrix = null,
+            scratch = null
+        ) {
             let bestRoute = [...initialRoute];
             const L = bestRoute.length;
             if (L < 6) return bestRoute;
 
             const zones = [];
-            if (priorityBoundary >= 4) {
-                zones.push({ start: 1, end: priorityBoundary });
-            }
-            if (L - 2 - priorityBoundary >= 4) {
-                zones.push({ start: priorityBoundary + 1, end: L - 2 });
-            }
+            if (priorityBoundary >= 4) zones.push({ start: 1, end: priorityBoundary });
+            if (L - 2 - priorityBoundary >= 4) zones.push({ start: priorityBoundary + 1, end: L - 2 });
 
-            let bestCost = computeTotalRouteCost(bestRoute, costMatrix, parsedNodes, passByList, priorityBoundary);
+            let bestCost = computeTotalRouteCost(bestRoute, costMatrix, parsedNodes, passByList, priorityBoundary, distanceMatrix, scratch);
             let improved = true;
             let passes = 0;
 
@@ -5150,11 +6532,9 @@
                 passes++;
 
                 for (const zone of zones) {
-                    // Tagli i < j < k all'interno della zona: scambia i due segmenti [i..j] e [j+1..k]
-                    // preservandone l'orientamento stradale originale
                     for (let i = zone.start; i <= zone.end - 2; i++) {
                         for (let j = i; j <= zone.end - 1; j++) {
-                            const maxK = Math.min(zone.end, j + 10);
+                            const maxK = Math.min(zone.end, j + 12);
                             for (let k = j + 1; k <= maxK; k++) {
                                 const u = bestRoute[i - 1];
                                 const a = bestRoute[i];
@@ -5167,14 +6547,14 @@
                                     (costMatrix[u][c] + costMatrix[d][a] + costMatrix[b][v]) -
                                     (costMatrix[u][a] + costMatrix[b][c] + costMatrix[d][v]);
 
-                                if (edgeDelta < 45) {
+                                if (edgeDelta < 65) {
                                     const candidate = [
                                         ...bestRoute.slice(0, i),
                                         ...bestRoute.slice(j + 1, k + 1),
                                         ...bestRoute.slice(i, j + 1),
                                         ...bestRoute.slice(k + 1)
                                     ];
-                                    const candCost = computeTotalRouteCost(candidate, costMatrix, parsedNodes, passByList, priorityBoundary);
+                                    const candCost = computeTotalRouteCost(candidate, costMatrix, parsedNodes, passByList, priorityBoundary, distanceMatrix, scratch);
                                     if (candCost + 0.5 < bestCost) {
                                         bestRoute = candidate;
                                         bestCost = candCost;
@@ -5194,102 +6574,21 @@
             return bestRoute;
         }
 
-        function applyRuinAndRecreate(route, startIdx, endIdx, costMatrix, nextRand) {
-            const zoneLen = endIdx - startIdx + 1;
-            if (zoneLen < 6) return [...route];
-
-            const seedPos = startIdx + Math.floor(nextRand() * zoneLen);
-            const seedNode = route[seedPos];
-            const removeCount = Math.min(zoneLen - 2, 5 + Math.floor(nextRand() * 4));
-
-            const candidates = [];
-            for (let pos = startIdx; pos <= endIdx; pos++) {
-                const node = route[pos];
-                const distScore = (costMatrix[seedNode][node] + costMatrix[node][seedNode]) * 0.5;
-                candidates.push({ pos, node, distScore });
+        function isValidRoutePermutation(route, n, priorityBoundary, allNodes) {
+            if (!Array.isArray(route) || route.length !== n) return false;
+            if (route[0] !== 0 || route[n - 1] !== n - 1) return false;
+            const seen = new Uint8Array(n);
+            for (let i = 1; i < n - 1; i++) {
+                const idx = route[i];
+                if (idx <= 0 || idx >= n - 1 || seen[idx]) return false;
+                seen[idx] = 1;
+                if (i <= priorityBoundary && !allNodes[idx].priority) return false;
             }
-            candidates.sort((a, b) => a.distScore - b.distScore);
-
-            const removedSet = new Set(candidates.slice(0, removeCount).map(c => c.node));
-            const removedNodes = [];
-            const partialRoute = [];
-
-            for (let i = 0; i < route.length; i++) {
-                if (i >= startIdx && i <= endIdx && removedSet.has(route[i])) {
-                    removedNodes.push(route[i]);
-                } else {
-                    partialRoute.push(route[i]);
-                }
-            }
-
-            const newEndIdx = endIdx - removedNodes.length;
-            let insertLimitEnd = newEndIdx;
-
-            while (removedNodes.length > 0) {
-                let bestNodeIdx = 0;
-                let bestPos = startIdx;
-                let bestDelta = Infinity;
-
-                for (let r = 0; r < removedNodes.length; r++) {
-                    const node = removedNodes[r];
-                    for (let ins = startIdx; ins <= insertLimitEnd + 1; ins++) {
-                        const prev = partialRoute[ins - 1];
-                        const next = partialRoute[ins];
-                        const delta = costMatrix[prev][node] + costMatrix[node][next] - costMatrix[prev][next];
-                        if (delta < bestDelta) {
-                            bestDelta = delta;
-                            bestNodeIdx = r;
-                            bestPos = ins;
-                        }
-                    }
-                }
-
-                const [chosenNode] = removedNodes.splice(bestNodeIdx, 1);
-                partialRoute.splice(bestPos, 0, chosenNode);
-                insertLimitEnd++;
-            }
-
-            return partialRoute;
-        }
-
-        function applyDoubleBridgeKick(route, startIdx, endIdx, nextRand) {
-            const len = endIdx - startIdx + 1;
-            if (len < 8) {
-                const copy = [...route];
-                const a = startIdx + Math.floor(nextRand() * len);
-                const b = startIdx + Math.floor(nextRand() * len);
-                const tmp = copy[a];
-                copy[a] = copy[b];
-                copy[b] = tmp;
-                return copy;
-            }
-
-            const p1 = startIdx + 1 + Math.floor(nextRand() * Math.max(1, Math.floor(len / 4)));
-            const p2 = p1 + 1 + Math.floor(nextRand() * Math.max(1, Math.floor(len / 4)));
-            const p3 = p2 + 1 + Math.floor(nextRand() * Math.max(1, Math.floor(len / 4)));
-            if (p3 >= endIdx) return [...route];
-
-            const segA = route.slice(startIdx, p1);
-            const segB = route.slice(p1, p2);
-            const segC = route.slice(p2, p3);
-            const segD = route.slice(p3, endIdx + 1);
-
-            return [
-                ...route.slice(0, startIdx),
-                ...segA,
-                ...segD,
-                ...segC,
-                ...segB,
-                ...route.slice(endIdx + 1)
-            ];
+            return true;
         }
 
         function generateTopRouteVariants(allNodes, durationMatrix, distanceMatrix, numTrials = 150) {
             const n = allNodes.length;
-            const costMatrix = buildHybridCostMatrix(allNodes, durationMatrix, distanceMatrix);
-            const parsedNodes = allNodes.map(node => extractStreetAndCivicNumeric(node.address));
-            const passByList = buildPassByMatrix(allNodes, durationMatrix, distanceMatrix, parsedNodes);
-
             if (n <= 2) {
                 const trivialRoute = n === 2 ? [0, 1] : [0];
                 const stats = computeRouteStatsFromMatrices(trivialRoute, allNodes, durationMatrix, distanceMatrix);
@@ -5301,14 +6600,17 @@
                 }];
             }
 
+            const parsedNodes = allNodes.map(node => extractCanonicalRoutingNodeInfo(node.address));
+            const numStreets = assignNodeStreetIds(parsedNodes);
+            const scratch = createRouteEvalScratch(n, numStreets);
+            const costMatrix = buildHybridCostMatrix(allNodes, durationMatrix, distanceMatrix, parsedNodes);
+            const passByList = buildPassByMatrix(allNodes, durationMatrix, distanceMatrix, parsedNodes);
+
             const priorityIndices = [];
             const regularIndices = [];
             for (let i = 1; i < n - 1; i++) {
-                if (allNodes[i].priority) {
-                    priorityIndices.push(i);
-                } else {
-                    regularIndices.push(i);
-                }
+                if (allNodes[i].priority) priorityIndices.push(i);
+                else regularIndices.push(i);
             }
             const priorityBoundary = priorityIndices.length;
 
@@ -5329,249 +6631,125 @@
                 return seed / 4294967296;
             };
 
-            const buildGroupOrder = (indicesGroup, startNode, mode, noiseFactor = 0, bridgeNode = -1) => {
-                if (indicesGroup.length <= 1) return [...indicesGroup];
-
-                if (mode === "polar_cw" || mode === "polar_ccw") {
-                    const ref = allNodes[startNode];
-                    const sorted = [...indicesGroup].sort((a, b) => {
-                        const angA = Math.atan2(allNodes[a].lat - ref.lat, allNodes[a].lon - ref.lon);
-                        const angB = Math.atan2(allNodes[b].lat - ref.lat, allNodes[b].lon - ref.lon);
-                        return mode === "polar_cw" ? angA - angB : angB - angA;
-                    });
-                    const offset = Math.floor(nextRand() * sorted.length);
-                    return [...sorted.slice(offset), ...sorted.slice(0, offset)];
-                }
-
-                if (mode === "spine_out_back") {
-                    const ref = allNodes[startNode];
-                    let farthest = indicesGroup[0];
-                    let maxDist = -1;
-                    for (const idx of indicesGroup) {
-                        const d = haversineKm(ref.lat, ref.lon, allNodes[idx].lat, allNodes[idx].lon);
-                        if (d > maxDist) {
-                            maxDist = d;
-                            farthest = idx;
-                        }
-                    }
-                    const ax = allNodes[farthest].lon - ref.lon;
-                    const ay = allNodes[farthest].lat - ref.lat;
-                    const rightSide = [];
-                    const leftSide = [];
-                    for (const idx of indicesGroup) {
-                        const vx = allNodes[idx].lon - ref.lon;
-                        const vy = allNodes[idx].lat - ref.lat;
-                        const proj = vx * ax + vy * ay;
-                        const cross = ax * vy - ay * vx;
-                        if (cross >= 0) {
-                            rightSide.push({ idx, proj });
-                        } else {
-                            leftSide.push({ idx, proj });
-                        }
-                    }
-                    rightSide.sort((a, b) => a.proj - b.proj);
-                    leftSide.sort((a, b) => b.proj - a.proj);
-                    return [...rightSide.map(x => x.idx), ...leftSide.map(x => x.idx)];
-                }
-
-                const unvisited = new Set(indicesGroup);
-                if (bridgeNode !== -1 && unvisited.has(bridgeNode)) {
-                    unvisited.delete(bridgeNode);
-                }
-
-                const result = [];
-                let current = startNode;
-
-                if (mode === "farthest_seed" && unvisited.size > 0) {
-                    let farthest = -1;
-                    let maxCost = -1;
-                    for (const cand of unvisited) {
-                        if (costMatrix[current][cand] > maxCost) {
-                            maxCost = costMatrix[current][cand];
-                            farthest = cand;
-                        }
-                    }
-                    if (farthest !== -1) {
-                        result.push(farthest);
-                        unvisited.delete(farthest);
-                        current = farthest;
-                    }
-                } else if (mode === "random_seed" && unvisited.size > 0) {
-                    const arr = Array.from(unvisited);
-                    const pick = arr[Math.floor(nextRand() * arr.length)];
-                    result.push(pick);
-                    unvisited.delete(pick);
-                    current = pick;
-                }
-
-                while (unvisited.size > 0) {
-                    let bestNext = -1;
-                    let bestScore = Infinity;
-                    for (const candidate of unvisited) {
-                        const jitter = noiseFactor > 0 ? (1 + (nextRand() - 0.5) * noiseFactor) : 1;
-                        const bridgePull = (bridgeNode === -1 && unvisited.size > 1 && minBridgeCostToRegular[candidate] > 0)
-                            ? -0.22 * minBridgeCostToRegular[candidate]
-                            : 0;
-                        const score = (costMatrix[current][candidate] + bridgePull) * jitter;
-                        if (score < bestScore) {
-                            bestScore = score;
-                            bestNext = candidate;
-                        }
-                    }
-                    result.push(bestNext);
-                    unvisited.delete(bestNext);
-                    current = bestNext;
-                }
-
-                if (bridgeNode !== -1 && indicesGroup.includes(bridgeNode)) {
-                    result.push(bridgeNode);
-                }
-
-                return result;
-            };
-
             const uniqueVariantsMap = new Map();
 
-            const registerCandidateRoute = (rawRoute) => {
-                const localOpt = localSearchOptimizeRoute(rawRoute, allNodes, costMatrix, priorityBoundary);
-                const optimized = repairPassByAndStreetOrder(localOpt, costMatrix, parsedNodes, passByList, priorityBoundary);
-                const sig = optimized.slice(1, -1).join(",");
-                const hybridCost = computeTotalRouteCost(optimized, costMatrix, parsedNodes, passByList, priorityBoundary);
-                const existing = uniqueVariantsMap.get(sig);
-                if (!existing || hybridCost < existing.hybridCost) {
-                    const stats = computeRouteStatsFromMatrices(optimized, allNodes, durationMatrix, distanceMatrix);
-                    uniqueVariantsMap.set(sig, {
-                        routeIndices: optimized,
-                        hybridCost,
-                        totalDurationSec: stats.totalDurationSec,
-                        totalDistanceMeters: stats.totalDistanceMeters
-                    });
+            const registerStreetFirstCandidate = (rawRoute, skipLocalStopSearch = false) => {
+                if (!isValidRoutePermutation(rawRoute, n, priorityBoundary, allNodes)) return;
+                const baseRoute = skipLocalStopSearch
+                    ? [...rawRoute]
+                    : localSearchOptimizeRoute(rawRoute, allNodes, costMatrix, priorityBoundary);
+
+                // Valuta sia il percorso puro Street-First (che preserva intatti i corridoi) sia quello post-localSearch
+                for (const candidateBase of (skipLocalStopSearch ? [baseRoute] : [rawRoute, baseRoute])) {
+                    const repaired = repairPassByAndStreetOrder(
+                        candidateBase,
+                        costMatrix,
+                        parsedNodes,
+                        passByList,
+                        priorityBoundary,
+                        distanceMatrix,
+                        scratch
+                    );
+                    if (!isValidRoutePermutation(repaired, n, priorityBoundary, allNodes)) continue;
+                    const sig = repaired.slice(1, -1).join(",");
+                    const hybridCost = computeTotalRouteCost(
+                        repaired,
+                        costMatrix,
+                        parsedNodes,
+                        passByList,
+                        priorityBoundary,
+                        distanceMatrix,
+                        scratch
+                    );
+                    const existing = uniqueVariantsMap.get(sig);
+                    if (!existing || hybridCost < existing.hybridCost) {
+                        const stats = computeRouteStatsFromMatrices(repaired, allNodes, durationMatrix, distanceMatrix);
+                        uniqueVariantsMap.set(sig, {
+                            routeIndices: repaired,
+                            hybridCost,
+                            totalDurationSec: stats.totalDurationSec,
+                            totalDistanceMeters: stats.totalDistanceMeters
+                        });
+                    }
                 }
             };
 
-            // Fase 1: Esplorazione multi-partenza diversificata
-            const initialExplorationCount = Math.floor(numTrials / 2);
-            for (let trial = 0; trial < initialExplorationCount; trial++) {
-                let mode = "greedy";
-                let noise = 0;
+            // =========================================================================
+            // FASE 1: Costruzione & Risoluzione Street-First (Corridoi Stradali GTSP)
+            // =========================================================================
+            const priorityCorridors = buildStreetCorridors(priorityIndices, allNodes, costMatrix, distanceMatrix, parsedNodes);
+            const regularCorridors = buildStreetCorridors(regularIndices, allNodes, costMatrix, distanceMatrix, parsedNodes);
 
-                if (trial === 0) {
-                    mode = "greedy";
-                } else if (trial === 1) {
-                    mode = "farthest_seed";
-                } else if (trial === 2) {
-                    mode = "spine_out_back";
-                } else if (trial === 3) {
-                    mode = "polar_cw";
-                } else if (trial === 4) {
-                    mode = "polar_ccw";
-                } else {
-                    mode = trial % 2 === 0 ? "random_seed" : "greedy";
-                    noise = 0.08 + (trial % 7) * 0.06;
-                }
+            const prioTailFn = regularIndices.length > 0
+                ? (exitNode) => minBridgeCostToRegular[exitNode]
+                : (exitNode) => costMatrix[exitNode][n - 1];
+            const regTailFn = (exitNode) => costMatrix[exitNode][n - 1];
 
-                const bridgeNode = (priorityIndices.length > 1 && regularIndices.length > 0 && trial < priorityIndices.length * 3)
-                    ? priorityIndices[trial % priorityIndices.length]
-                    : -1;
+            const topPrioNodeOrders = solveStreetFirstZone(
+                priorityCorridors,
+                0,
+                prioTailFn,
+                allNodes,
+                costMatrix,
+                nextRand,
+                4
+            );
 
-                const pOrder = buildGroupOrder(priorityIndices, 0, mode, noise, bridgeNode);
-                const lastPNode = pOrder.length > 0 ? pOrder[pOrder.length - 1] : 0;
-                const rOrder = buildGroupOrder(regularIndices, lastPNode, mode, noise, -1);
-                registerCandidateRoute([0, ...pOrder, ...rOrder, n - 1]);
-            }
-
-            // Fase 2: Iterated Local Search (Ruin & Recreate di quartiere + Double-Bridge)
-            for (let trial = initialExplorationCount; trial < numTrials; trial++) {
-                const topPool = Array.from(uniqueVariantsMap.values())
-                    .sort((a, b) => a.hybridCost - b.hybridCost)
-                    .slice(0, 3);
-                const baseCandidate = topPool[trial % topPool.length];
-
-                if (baseCandidate && baseCandidate.routeIndices.length >= 5) {
-                    let perturbed = [...baseCandidate.routeIndices];
-                    const useRuinAndRecreate = trial % 2 === 0;
-
-                    if (priorityBoundary >= 6 && trial % 3 === 0) {
-                        perturbed = applyRuinAndRecreate(perturbed, 1, priorityBoundary, costMatrix, nextRand);
-                    } else if (priorityBoundary >= 4 && trial % 3 === 0) {
-                        perturbed = applyDoubleBridgeKick(perturbed, 1, priorityBoundary, nextRand);
-                    }
-
-                    const regStart = priorityBoundary + 1;
-                    const regEnd = perturbed.length - 2;
-                    const regLen = regEnd - regStart + 1;
-
-                    if (regLen >= 6 && useRuinAndRecreate) {
-                        perturbed = applyRuinAndRecreate(perturbed, regStart, regEnd, costMatrix, nextRand);
-                    } else if (regLen >= 4) {
-                        perturbed = applyDoubleBridgeKick(perturbed, regStart, regEnd, nextRand);
-                    } else if (regLen >= 2) {
-                        const idxA = regStart + Math.floor(nextRand() * regLen);
-                        const idxB = regStart + Math.floor(nextRand() * regLen);
-                        const tmp = perturbed[idxA];
-                        perturbed[idxA] = perturbed[idxB];
-                        perturbed[idxB] = tmp;
-                    }
-
-                    registerCandidateRoute(perturbed);
+            for (const pOrder of topPrioNodeOrders) {
+                const startForReg = pOrder.length > 0 ? pOrder[pOrder.length - 1] : 0;
+                const topRegNodeOrders = solveStreetFirstZone(
+                    regularCorridors,
+                    startForReg,
+                    regTailFn,
+                    allNodes,
+                    costMatrix,
+                    nextRand,
+                    6
+                );
+                for (const rOrder of topRegNodeOrders) {
+                    registerStreetFirstCandidate([0, ...pOrder, ...rOrder, n - 1], false);
                 }
             }
 
-            if (uniqueVariantsMap.size < 3 && n >= 4 && n <= 6) {
-                const base = Array.from(uniqueVariantsMap.values())[0]?.routeIndices;
-                if (base) {
-                    for (let i = 1; i < base.length - 2 && uniqueVariantsMap.size < 3; i++) {
-                        if (allNodes[base[i]].priority !== allNodes[base[i + 1]].priority) continue;
-                        const swapped = [...base];
-                        const t = swapped[i];
-                        swapped[i] = swapped[i + 1];
-                        swapped[i + 1] = t;
-                        const sig = swapped.slice(1, -1).join(",");
-                        if (!uniqueVariantsMap.has(sig)) {
-                            const stats = computeRouteStatsFromMatrices(swapped, allNodes, durationMatrix, distanceMatrix);
-                            uniqueVariantsMap.set(sig, {
-                                routeIndices: swapped,
-                                hybridCost: computeTotalRouteCost(swapped, costMatrix, parsedNodes, passByList, priorityBoundary),
-                                totalDurationSec: stats.totalDurationSec,
-                                totalDistanceMeters: stats.totalDistanceMeters
-                            });
-                        }
-                    }
-                }
-            }
-
-            // Fase 3: Varianti strutturalmente alternative (percorso a km minimi + anti-sovrapposizione archi)
-            const registerWithSpecificMatrix = (rawRoute, activeMatrix) => {
-                const localOpt = localSearchOptimizeRoute(rawRoute, allNodes, activeMatrix, priorityBoundary);
-                const optimized = repairPassByAndStreetOrder(localOpt, costMatrix, parsedNodes, passByList, priorityBoundary);
-                const sig = optimized.slice(1, -1).join(",");
-                const trueHybridCost = computeTotalRouteCost(optimized, costMatrix, parsedNodes, passByList, priorityBoundary);
-                const existing = uniqueVariantsMap.get(sig);
-                if (!existing || trueHybridCost < existing.hybridCost) {
-                    const stats = computeRouteStatsFromMatrices(optimized, allNodes, durationMatrix, distanceMatrix);
-                    uniqueVariantsMap.set(sig, {
-                        routeIndices: optimized,
-                        hybridCost: trueHybridCost,
-                        totalDurationSec: stats.totalDurationSec,
-                        totalDistanceMeters: stats.totalDistanceMeters
-                    });
-                }
-            };
-
+            // =========================================================================
+            // FASE 2: Varianti Street-First Strutturalmente Distinte (Km Minimi & Anti-Overlap)
+            // =========================================================================
             const distanceOrientedMatrix = Array.from({ length: n }, (_, i) =>
                 Array.from({ length: n }, (_, j) => {
                     if (i === j) return 0;
                     const leg = getEffectiveLegMetrics(i, j, allNodes, durationMatrix, distanceMatrix);
-                    return leg.durationSec * 0.45 + (leg.distanceMeters / 1000) * 55;
+                    return Math.max(1, leg.durationSec * 0.40 + (leg.distanceMeters / 1000) * 60);
                 })
             );
-            for (const distMode of ["greedy", "spine_out_back", "polar_cw", "polar_ccw"]) {
-                const pOrder = buildGroupOrder(priorityIndices, 0, distMode, 0, -1);
-                const lastPNode = pOrder.length > 0 ? pOrder[pOrder.length - 1] : 0;
-                const rOrder = buildGroupOrder(regularIndices, lastPNode, distMode, 0, -1);
-                registerWithSpecificMatrix([0, ...pOrder, ...rOrder, n - 1], distanceOrientedMatrix);
+            const kmPrioCorridors = buildStreetCorridors(priorityIndices, allNodes, distanceOrientedMatrix, distanceMatrix, parsedNodes);
+            const kmRegCorridors = buildStreetCorridors(regularIndices, allNodes, distanceOrientedMatrix, distanceMatrix, parsedNodes);
+
+            const kmPrioOrders = solveStreetFirstZone(
+                kmPrioCorridors,
+                0,
+                regularIndices.length > 0 ? (ex) => minBridgeCostToRegular[ex] : (ex) => distanceOrientedMatrix[ex][n - 1],
+                allNodes,
+                distanceOrientedMatrix,
+                nextRand,
+                2
+            );
+            for (const pOrd of kmPrioOrders) {
+                const sReg = pOrd.length > 0 ? pOrd[pOrd.length - 1] : 0;
+                const kmRegOrders = solveStreetFirstZone(
+                    kmRegCorridors,
+                    sReg,
+                    (ex) => distanceOrientedMatrix[ex][n - 1],
+                    allNodes,
+                    distanceOrientedMatrix,
+                    nextRand,
+                    3
+                );
+                for (const rOrd of kmRegOrders) {
+                    registerStreetFirstCandidate([0, ...pOrd, ...rOrd, n - 1], true);
+                }
             }
 
+            // Generazione varianti anti-sovrapposizione a livello di corridoi stradali per la card "Top 3 Percorsi"
             for (let divPass = 0; divPass < 2; divPass++) {
                 const currentTop = selectSignificantlyDifferentTopRoutes(Array.from(uniqueVariantsMap.values()), divPass + 1);
                 const usedEdges = new Set();
@@ -5585,31 +6763,100 @@
                     Array.from({ length: n }, (_, j) => {
                         if (i === j) return 0;
                         const base = costMatrix[i][j];
-                        return usedEdges.has(`${i}->${j}`) ? base * 1.42 + 45 : base;
+                        return usedEdges.has(`${i}->${j}`) ? base * 1.45 + 50 : base;
                     })
                 );
 
-                for (let sub = 0; sub < 8; sub++) {
-                    const subMode = sub === 0 ? "greedy" : (sub === 1 ? "polar_ccw" : (sub === 2 ? "spine_out_back" : "random_seed"));
-                    const subNoise = sub >= 3 ? 0.18 : 0;
-                    const pOrder = buildGroupOrder(priorityIndices, 0, subMode, subNoise, -1);
-                    const lastPNode = pOrder.length > 0 ? pOrder[pOrder.length - 1] : 0;
-                    const rOrder = buildGroupOrder(regularIndices, lastPNode, subMode, subNoise, -1);
-                    registerWithSpecificMatrix([0, ...pOrder, ...rOrder, n - 1], antiOverlapMatrix);
+                const divPrioCorridors = buildStreetCorridors(priorityIndices, allNodes, antiOverlapMatrix, distanceMatrix, parsedNodes);
+                const divRegCorridors = buildStreetCorridors(regularIndices, allNodes, antiOverlapMatrix, distanceMatrix, parsedNodes);
+                const divPrioOrders = solveStreetFirstZone(
+                    divPrioCorridors,
+                    0,
+                    prioTailFn,
+                    allNodes,
+                    antiOverlapMatrix,
+                    nextRand,
+                    2
+                );
+                for (const pOrd of divPrioOrders) {
+                    const sReg = pOrd.length > 0 ? pOrd[pOrd.length - 1] : 0;
+                    const divRegOrders = solveStreetFirstZone(
+                        divRegCorridors,
+                        sReg,
+                        (ex) => antiOverlapMatrix[ex][n - 1],
+                        allNodes,
+                        antiOverlapMatrix,
+                        nextRand,
+                        3
+                    );
+                    for (const rOrd of divRegOrders) {
+                        registerStreetFirstCandidate([0, ...pOrd, ...rOrd, n - 1], true);
+                    }
                 }
             }
 
-            // Rifinitura finale con 3-opt orientato, riallocazione globale e controllo pass-by sulle migliori candidate
+            // Fallback per giri piccolissimi (2-4 fermate) per garantire fino a 3 varianti confrontabili
+            if (uniqueVariantsMap.size < 3 && n >= 4 && n <= 6) {
+                const base = Array.from(uniqueVariantsMap.values())[0]?.routeIndices;
+                if (base) {
+                    for (let i = 1; i < base.length - 2 && uniqueVariantsMap.size < 3; i++) {
+                        if (allNodes[base[i]].priority !== allNodes[base[i + 1]].priority) continue;
+                        const swapped = [...base];
+                        const t = swapped[i];
+                        swapped[i] = swapped[i + 1];
+                        swapped[i + 1] = t;
+                        registerStreetFirstCandidate(swapped, true);
+                    }
+                }
+            }
+
+            // =========================================================================
+            // FASE 3: Rifinitura Finale Micro-Livello (3-opt orientato + Traverse + Pass-By)
+            // =========================================================================
             const topFinalists = Array.from(uniqueVariantsMap.values())
                 .sort((a, b) => a.hybridCost - b.hybridCost)
                 .slice(0, 8);
 
             for (const cand of topFinalists) {
-                let refinedRoute = orientedThreeOptPass(cand.routeIndices, costMatrix, priorityBoundary, parsedNodes, passByList);
-                refinedRoute = fullObjectiveRelocatePass(refinedRoute, costMatrix, parsedNodes, passByList, priorityBoundary);
-                refinedRoute = repairPassByAndStreetOrder(refinedRoute, costMatrix, parsedNodes, passByList, priorityBoundary);
+                let refinedRoute = orientedThreeOptPass(
+                    cand.routeIndices,
+                    costMatrix,
+                    priorityBoundary,
+                    parsedNodes,
+                    passByList,
+                    distanceMatrix,
+                    scratch
+                );
+                refinedRoute = fullObjectiveRelocatePass(
+                    refinedRoute,
+                    costMatrix,
+                    parsedNodes,
+                    passByList,
+                    priorityBoundary,
+                    distanceMatrix,
+                    scratch
+                );
+                refinedRoute = repairPassByAndStreetOrder(
+                    refinedRoute,
+                    costMatrix,
+                    parsedNodes,
+                    passByList,
+                    priorityBoundary,
+                    distanceMatrix,
+                    scratch
+                );
+                if (!isValidRoutePermutation(refinedRoute, n, priorityBoundary, allNodes)) continue;
+
                 const sig = refinedRoute.slice(1, -1).join(",");
-                const refinedCost = computeTotalRouteCost(refinedRoute, costMatrix, parsedNodes, passByList, priorityBoundary);
+                const refinedCost = computeTotalRouteCost(
+                    refinedRoute,
+                    costMatrix,
+                    parsedNodes,
+                    passByList,
+                    priorityBoundary,
+                    distanceMatrix,
+                    scratch
+                );
                 const existing = uniqueVariantsMap.get(sig);
                 if (!existing || refinedCost < existing.hybridCost) {
                     const stats = computeRouteStatsFromMatrices(refinedRoute, allNodes, durationMatrix, distanceMatrix);
@@ -5845,6 +7092,7 @@
                             note: item.note || "",
                             lat: geo.lat,
                             lon: geo.lon,
+                            exactCivic: Boolean(geo.exactCivic),
                             distanceKm: Math.round(distFromStartKm),
                             wasAnomaly: distFromStartKm > ANOMALY_DISTANCE_KM
                         });
@@ -5866,6 +7114,7 @@
                     return;
                 }
 
+                interpolateMissingStreetCivics(validStops);
                 const stopClusters = buildWalkStopClusters(validStops, 50);
 
                 const allNodes = [
